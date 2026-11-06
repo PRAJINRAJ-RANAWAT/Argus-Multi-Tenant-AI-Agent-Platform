@@ -38,21 +38,24 @@ App page → **Install App** → choose your account → **Only select repositor
 
 ## 3. Configure the server
 
-On the VPS, append to `/opt/argus/.env` (single quotes keep the `\n` escapes literal; Argus converts them):
+Copy the key to the VPS first (`scp argus.private-key.pem deploy@<VPS_IP>:/opt/argus/`), then on the VPS append to `/opt/argus/.env` (single quotes keep the `\n` escapes literal; Argus converts them):
 
 ```bash
 cd /opt/argus
 echo "ARGUS_GITHUB_APP_ID=<app id>" >> .env
 echo "ARGUS_GITHUB_WEBHOOK_SECRET=<secret from step 1>" >> .env
-echo "ARGUS_GITHUB_PRIVATE_KEY='$(awk 'NF {printf "%s\\n", $0}' /path/to/argus.private-key.pem)'" >> .env
+echo "ARGUS_GITHUB_PRIVATE_KEY='$(awk 'NF {printf "%s\\n", $0}' argus.private-key.pem)'" >> .env
+rm argus.private-key.pem   # the key now lives only in .env
 # Until a real LLM key is configured, reviews come from the bundled mock LLM:
 echo "ARGUS_LLM_BASE_URL=http://mock-llm:8000/v1" >> .env
 chmod 600 .env
-ARGUS_IMAGE_TAG=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' $(docker ps -qf name=argus-api-1) 2>/dev/null) \
-  docker compose -f docker-compose.prod.yml up -d   # or just re-run the Deploy workflow
 ```
 
-(Simplest: after editing `.env`, re-run the **Deploy** workflow: `gh workflow run deploy.yml --ref main`.)
+Then re-run the **Deploy** workflow so the containers pick up the new values:
+
+```bash
+gh workflow run deploy.yml --ref main
+```
 
 ## 4. Real LLM (optional, costs money)
 
