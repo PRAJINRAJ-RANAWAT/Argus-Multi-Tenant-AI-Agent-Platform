@@ -1,0 +1,42 @@
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local data
+*.log
+.data/
