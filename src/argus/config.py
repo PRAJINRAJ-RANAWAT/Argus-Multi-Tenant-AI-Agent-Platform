@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     log_level: str = "INFO"
     git_sha: str = Field(default="unknown", description="Build revision, injected at image build")
+
+    # GitHub App
+    github_webhook_secret: SecretStr = SecretStr("")
 
 
 @lru_cache
