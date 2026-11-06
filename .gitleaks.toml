@@ -1,0 +1,8 @@
+title = "argus gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Placeholders and test-only fixtures"
+paths = ['''\.env\.example$''']

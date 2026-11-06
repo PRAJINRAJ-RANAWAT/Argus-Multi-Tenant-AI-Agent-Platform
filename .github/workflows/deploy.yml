@@ -1,0 +1,119 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/prajinraj-ranawat/argus
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          build-args: GIT_SHA=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://${{ vars.ARGUS_DOMAIN }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      ARGUS_DOMAIN: ${{ vars.ARGUS_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check deploy configuration
+        id: cfg
+        run: |
+          missing=""
+          for v in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS ARGUS_DOMAIN; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning::Deploy skipped; missing secrets/variables:$missing"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure SSH
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host argus
+            HostName $DEPLOY_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          CFG
+
+      - name: Upload deploy bundle
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          ssh argus 'mkdir -p /opt/argus'
+          scp deploy/docker-compose.prod.yml deploy/Caddyfile deploy/deploy.sh argus:/opt/argus/
+
+      - name: Deploy
+        if: steps.cfg.outputs.ready == 'true'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          SHA: ${{ github.sha }}
+        run: |
+          # Token goes over stdin so it never appears in a remote command line.
+          printf '%s' "$GHCR_TOKEN" | ssh argus "docker login ghcr.io -u $ACTOR --password-stdin"
+          rc=0
+          ssh argus "/opt/argus/deploy.sh $SHA" || rc=$?
+          ssh argus 'docker logout ghcr.io >/dev/null' || true
+          exit "$rc"
+
+      - name: Smoke test
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          for _ in $(seq 1 30); do
+            body=$(curl -fsS "https://$ARGUS_DOMAIN/healthz" || true)
+            if echo "$body" | grep -q '"git_sha":"${{ github.sha }}"'; then
+              echo "live: $body"; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::new revision not serving at https://$ARGUS_DOMAIN/healthz"; exit 1
