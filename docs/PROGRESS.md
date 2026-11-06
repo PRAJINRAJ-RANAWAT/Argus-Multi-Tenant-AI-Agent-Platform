@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**M0 · Skeleton** (in review)
+**M1 · Webhook to review comment**: M1a (ingest + outbox + queue) in review; M1b (worker, mock LLM, GitHub App) next
 
 ## Done
 
@@ -17,9 +17,18 @@
 - Deploy workflow on push to `main`: build → GHCR → SSH deploy → smoke test on `git_sha`. Skips with a warning until secrets exist.
 - ADRs 0001 (monorepo/tooling/raw SQL) and 0002 (single-VPS deploy).
 
+### M0 · Skeleton: merged, tagged `v0.0.0`
+(Deploy job runs and skips until the VPS secrets exist.)
+
+### M1a · Ingest, outbox, queue
+- `POST /webhooks/github`: HMAC-SHA256 verify (constant time) → Redis fast-path dedupe → `events` + `outbox` rows in one transaction → 202. Postgres `UNIQUE (source, delivery_id)` is the dedupe source of truth; Redis is set only after commit (ADR 0003).
+- Outbox relay (`argus-relay`): `FOR UPDATE SKIP LOCKED` batches → `XADD` → mark published; woken by `NOTIFY`, polls as a fallback; records errors and backs off.
+- Redis Streams queue: consumer groups, ack-after-work, delayed retries (ZSET, exponential backoff with full jitter), DLQ, `XAUTOCLAIM` reclaim, ownership-checked ack (zombie protection), poison-message bound on delivery count. All failure transitions are atomic Lua (ADR 0004).
+- Tests: 20 concurrent duplicate deliveries store exactly one event; flushed Redis / Redis down / DB failure mid-request; 6 relays × 500 rows never double-publish; crash between XADD and COMMIT republishes (documented); zombie ack rejected; poison message dead-lettered; 3 competing consumers process 200 messages exactly once; concurrency cap respected.
+
 ## Next
 
-- **M1 · Webhook to review comment:** GitHub App webhook endpoint with HMAC verify, `X-GitHub-Delivery` dedupe in Redis, event + outbox in one transaction, outbox relay → Redis Streams (`jobs:review`), one worker with consumer group, mock LLM server, a single LLM call that posts a PR comment via an installation token. Idempotency on (tenant, repo, pr, head_sha).
+- **M1b:** mock LLM server; GitHub App JWT + installation tokens cached in Redis; review worker consuming `jobs:review` with a run keyed on (tenant, repo, pr, head_sha); one LLM call; idempotent PR comment (DB record + hidden marker check). GitHub App registration guide.
 
 ## Blockers waiting on the owner
 
