@@ -1,0 +1,24 @@
+{$ARGUS_DOMAIN} {
+	encode zstd gzip
+
+	# Webhooks (GitHub, Slack) go to the ingest service.
+	handle /webhooks/* {
+		reverse_proxy ingest:8000
+	}
+	handle /ingest/healthz {
+		rewrite * /healthz
+		reverse_proxy ingest:8000
+	}
+
+	# Everything else is the API / dashboard backend.
+	handle {
+		reverse_proxy api:8000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}

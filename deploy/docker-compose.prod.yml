@@ -1,0 +1,77 @@
+# Production stack for a single VPS. Images come from GHCR; secrets come from /opt/argus/.env.
+name: argus
+
+x-app: &app
+  image: ghcr.io/prajinraj-ranawat/argus:${ARGUS_IMAGE_TAG:?set ARGUS_IMAGE_TAG}
+  env_file: .env
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "5" }
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      ARGUS_DOMAIN: ${ARGUS_DOMAIN:?set ARGUS_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [api, ingest]
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    env_file: .env
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["argus-migrate"]
+    profiles: ["migrate"]
+
+  api:
+    <<: *app
+    environment: { ARGUS_SERVICE_NAME: argus-api }
+    command: ["uvicorn", "argus.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+
+  ingest:
+    <<: *app
+    environment: { ARGUS_SERVICE_NAME: argus-ingest }
+    command: ["uvicorn", "argus.ingest.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+
+  worker:
+    <<: *app
+    environment: { ARGUS_SERVICE_NAME: argus-worker }
+    command: ["argus-worker"]
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
