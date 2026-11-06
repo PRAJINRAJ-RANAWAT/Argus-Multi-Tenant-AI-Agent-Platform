@@ -1,0 +1,110 @@
+<svg class="rich-terminal" viewBox="0 0 1458 367.2" xmlns="http://www.w3.org/2000/svg">
+    <!-- Generated with Rich https://www.textualize.io -->
+    <style>
+
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Regular"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Regular.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Regular.woff") format("woff");
+        font-style: normal;
+        font-weight: 400;
+    }
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Bold"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Bold.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Bold.woff") format("woff");
+        font-style: bold;
+        font-weight: 700;
+    }
+
+    .terminal-1545375684-matrix {
+        font-family: Fira Code, monospace;
+        font-size: 20px;
+        line-height: 24.4px;
+        font-variant-east-asian: full-width;
+    }
+
+    .terminal-1545375684-title {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: arial;
+    }
+
+    .terminal-1545375684-r1 { fill: #68a0b3;font-weight: bold }
+.terminal-1545375684-r2 { fill: #c5c8c6 }
+.terminal-1545375684-r3 { fill: #868887 }
+.terminal-1545375684-r4 { fill: #98a84b }
+.terminal-1545375684-r5 { fill: #98a84b;font-weight: bold }
+    </style>
+
+    <defs>
+    <clipPath id="terminal-1545375684-clip-terminal">
+      <rect x="0" y="0" width="1438.6" height="316.2" />
+    </clipPath>
+    <clipPath id="terminal-1545375684-line-0">
+    <rect x="0" y="1.5" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-1">
+    <rect x="0" y="25.9" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-2">
+    <rect x="0" y="50.3" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-3">
+    <rect x="0" y="74.7" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-4">
+    <rect x="0" y="99.1" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-5">
+    <rect x="0" y="123.5" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-6">
+    <rect x="0" y="147.9" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-7">
+    <rect x="0" y="172.3" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-8">
+    <rect x="0" y="196.7" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-9">
+    <rect x="0" y="221.1" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-10">
+    <rect x="0" y="245.5" width="1439.6" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-1545375684-line-11">
+    <rect x="0" y="269.9" width="1439.6" height="24.65"/>
+            </clipPath>
+    </defs>
+
+    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1456" height="365.2" rx="8"/><text class="terminal-1545375684-title" fill="#c5c8c6" text-anchor="middle" x="728" y="27">argus:&#160;failure&#160;and&#160;race&#160;tests</text>
+            <g transform="translate(26,22)">
+            <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
+            <circle cx="22" cy="0" r="7" fill="#febc2e"/>
+            <circle cx="44" cy="0" r="7" fill="#28c840"/>
+            </g>
+        
+    <g transform="translate(9, 41)" clip-path="url(#terminal-1545375684-clip-terminal)">
+    
+    <g class="terminal-1545375684-matrix">
+    <text class="terminal-1545375684-r1" x="0" y="20" textLength="12.2" clip-path="url(#terminal-1545375684-line-0)">$</text><text class="terminal-1545375684-r2" x="12.2" y="20" textLength="231.8" clip-path="url(#terminal-1545375684-line-0)">&#160;uv&#160;run&#160;pytest&#160;-v&#160;&#160;</text><text class="terminal-1545375684-r3" x="244" y="20" textLength="780.8" clip-path="url(#terminal-1545375684-line-0)">#&#160;failure&#160;&amp;&#160;race&#160;tests,&#160;real&#160;Postgres&#160;+&#160;Redis&#160;via&#160;testcontainers</text><text class="terminal-1545375684-r2" x="1439.6" y="20" textLength="12.2" clip-path="url(#terminal-1545375684-line-0)">
+</text><text class="terminal-1545375684-r2" x="0" y="44.4" textLength="744.2" clip-path="url(#terminal-1545375684-line-1)">test_ingest.py::test_concurrent_duplicates_store_exactly_one&#160;</text><text class="terminal-1545375684-r4" x="744.2" y="44.4" textLength="73.2" clip-path="url(#terminal-1545375684-line-1)">PASSED</text><text class="terminal-1545375684-r4" x="817.4" y="44.4" textLength="85.4" clip-path="url(#terminal-1545375684-line-1)">&#160;[&#160;&#160;9%]</text><text class="terminal-1545375684-r2" x="1439.6" y="44.4" textLength="12.2" clip-path="url(#terminal-1545375684-line-1)">
+</text><text class="terminal-1545375684-r2" x="0" y="68.8" textLength="719.8" clip-path="url(#terminal-1545375684-line-2)">test_ingest.py::test_failed_persist_does_not_poison_dedupe&#160;</text><text class="terminal-1545375684-r4" x="719.8" y="68.8" textLength="73.2" clip-path="url(#terminal-1545375684-line-2)">PASSED</text><text class="terminal-1545375684-r4" x="793" y="68.8" textLength="97.6" clip-path="url(#terminal-1545375684-line-2)">&#160;&#160;[&#160;18%]</text><text class="terminal-1545375684-r2" x="1439.6" y="68.8" textLength="12.2" clip-path="url(#terminal-1545375684-line-2)">
+</text><text class="terminal-1545375684-r2" x="0" y="93.2" textLength="719.8" clip-path="url(#terminal-1545375684-line-3)">test_relay.py::test_concurrent_relays_never_double_publish&#160;</text><text class="terminal-1545375684-r4" x="719.8" y="93.2" textLength="73.2" clip-path="url(#terminal-1545375684-line-3)">PASSED</text><text class="terminal-1545375684-r4" x="793" y="93.2" textLength="97.6" clip-path="url(#terminal-1545375684-line-3)">&#160;&#160;[&#160;27%]</text><text class="terminal-1545375684-r2" x="1439.6" y="93.2" textLength="12.2" clip-path="url(#terminal-1545375684-line-3)">
+</text><text class="terminal-1545375684-r2" x="0" y="117.6" textLength="658.8" clip-path="url(#terminal-1545375684-line-4)">test_streams.py::test_zombie_cannot_ack_after_reclaim&#160;</text><text class="terminal-1545375684-r4" x="658.8" y="117.6" textLength="73.2" clip-path="url(#terminal-1545375684-line-4)">PASSED</text><text class="terminal-1545375684-r4" x="732" y="117.6" textLength="158.6" clip-path="url(#terminal-1545375684-line-4)">&#160;&#160;&#160;&#160;&#160;&#160;&#160;[&#160;36%]</text><text class="terminal-1545375684-r2" x="1439.6" y="117.6" textLength="12.2" clip-path="url(#terminal-1545375684-line-4)">
+</text><text class="terminal-1545375684-r2" x="0" y="142" textLength="939.4" clip-path="url(#terminal-1545375684-line-5)">test_streams.py::test_poison_message_that_crashes_consumers_is_dead_lettered&#160;</text><text class="terminal-1545375684-r4" x="939.4" y="142" textLength="73.2" clip-path="url(#terminal-1545375684-line-5)">PASSED</text><text class="terminal-1545375684-r4" x="1012.6" y="142" textLength="85.4" clip-path="url(#terminal-1545375684-line-5)">&#160;[&#160;45%]</text><text class="terminal-1545375684-r2" x="1439.6" y="142" textLength="12.2" clip-path="url(#terminal-1545375684-line-5)">
+</text><text class="terminal-1545375684-r2" x="0" y="166.4" textLength="866.2" clip-path="url(#terminal-1545375684-line-6)">test_runs.py::test_expired_lease_can_be_reclaimed_and_zombie_is_fenced&#160;</text><text class="terminal-1545375684-r4" x="866.2" y="166.4" textLength="73.2" clip-path="url(#terminal-1545375684-line-6)">PASSED</text><text class="terminal-1545375684-r4" x="939.4" y="166.4" textLength="85.4" clip-path="url(#terminal-1545375684-line-6)">&#160;[&#160;54%]</text><text class="terminal-1545375684-r2" x="1439.6" y="166.4" textLength="12.2" clip-path="url(#terminal-1545375684-line-6)">
+</text><text class="terminal-1545375684-r2" x="0" y="190.8" textLength="951.6" clip-path="url(#terminal-1545375684-line-7)">test_pr_review.py::test_replayed_and_duplicate_deliveries_produce_one_comment&#160;</text><text class="terminal-1545375684-r4" x="951.6" y="190.8" textLength="73.2" clip-path="url(#terminal-1545375684-line-7)">PASSED</text><text class="terminal-1545375684-r4" x="1024.8" y="190.8" textLength="85.4" clip-path="url(#terminal-1545375684-line-7)">&#160;[&#160;63%]</text><text class="terminal-1545375684-r2" x="1439.6" y="190.8" textLength="12.2" clip-path="url(#terminal-1545375684-line-7)">
+</text><text class="terminal-1545375684-r2" x="0" y="215.2" textLength="646.6" clip-path="url(#terminal-1545375684-line-8)">test_pr_review.py::test_concurrent_workers_post_once&#160;</text><text class="terminal-1545375684-r4" x="646.6" y="215.2" textLength="73.2" clip-path="url(#terminal-1545375684-line-8)">PASSED</text><text class="terminal-1545375684-r4" x="719.8" y="215.2" textLength="170.8" clip-path="url(#terminal-1545375684-line-8)">&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;[&#160;72%]</text><text class="terminal-1545375684-r2" x="1439.6" y="215.2" textLength="12.2" clip-path="url(#terminal-1545375684-line-8)">
+</text><text class="terminal-1545375684-r2" x="0" y="239.6" textLength="793" clip-path="url(#terminal-1545375684-line-9)">test_pr_review.py::test_llm_outage_is_retried_without_duplicates&#160;</text><text class="terminal-1545375684-r4" x="793" y="239.6" textLength="73.2" clip-path="url(#terminal-1545375684-line-9)">PASSED</text><text class="terminal-1545375684-r4" x="866.2" y="239.6" textLength="85.4" clip-path="url(#terminal-1545375684-line-9)">&#160;[&#160;81%]</text><text class="terminal-1545375684-r2" x="1439.6" y="239.6" textLength="12.2" clip-path="url(#terminal-1545375684-line-9)">
+</text><text class="terminal-1545375684-r2" x="0" y="264" textLength="963.8" clip-path="url(#terminal-1545375684-line-10)">test_pr_review.py::test_lost_response_after_comment_created_does_not_duplicate&#160;</text><text class="terminal-1545375684-r4" x="963.8" y="264" textLength="73.2" clip-path="url(#terminal-1545375684-line-10)">PASSED</text><text class="terminal-1545375684-r4" x="1037" y="264" textLength="85.4" clip-path="url(#terminal-1545375684-line-10)">&#160;[&#160;90%]</text><text class="terminal-1545375684-r2" x="1439.6" y="264" textLength="12.2" clip-path="url(#terminal-1545375684-line-10)">
+</text><text class="terminal-1545375684-r2" x="0" y="288.4" textLength="841.8" clip-path="url(#terminal-1545375684-line-11)">test_pr_review.py::test_worker_killed_mid_run_is_recovered_by_reaper&#160;</text><text class="terminal-1545375684-r4" x="841.8" y="288.4" textLength="73.2" clip-path="url(#terminal-1545375684-line-11)">PASSED</text><text class="terminal-1545375684-r4" x="915" y="288.4" textLength="85.4" clip-path="url(#terminal-1545375684-line-11)">&#160;[100%]</text><text class="terminal-1545375684-r2" x="1439.6" y="288.4" textLength="12.2" clip-path="url(#terminal-1545375684-line-11)">
+</text><text class="terminal-1545375684-r4" x="0" y="312.8" textLength="378.2" clip-path="url(#terminal-1545375684-line-12)">==============================&#160;</text><text class="terminal-1545375684-r5" x="378.2" y="312.8" textLength="109.8" clip-path="url(#terminal-1545375684-line-12)">11&#160;passed</text><text class="terminal-1545375684-r4" x="488" y="312.8" textLength="109.8" clip-path="url(#terminal-1545375684-line-12)">&#160;in&#160;4.58s</text><text class="terminal-1545375684-r4" x="597.8" y="312.8" textLength="378.2" clip-path="url(#terminal-1545375684-line-12)">&#160;==============================</text><text class="terminal-1545375684-r2" x="1439.6" y="312.8" textLength="12.2" clip-path="url(#terminal-1545375684-line-12)">
+</text>
+    </g>
+    </g>
+</svg>
