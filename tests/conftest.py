@@ -1,9 +1,12 @@
 """Shared fixtures: real Postgres (pgvector) and Redis via testcontainers."""
 
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 
 import asyncpg
+import httpx
 import pytest
+from fastapi import FastAPI
 from redis.asyncio import Redis
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
@@ -47,14 +50,39 @@ async def migrated_dsn(pg_dsn: str) -> str:
     return pg_dsn
 
 
+WEBHOOK_SECRET = "test-webhook-secret"
+
+
 @pytest.fixture
 def settings(migrated_dsn: str, redis_url: str) -> Settings:
-    return Settings(database_url=migrated_dsn, redis_url=redis_url, git_sha="test")
+    return Settings(
+        database_url=migrated_dsn,
+        redis_url=redis_url,
+        git_sha="test",
+        github_webhook_secret=WEBHOOK_SECRET,
+    )
+
+
+@asynccontextmanager
+async def app_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """Run the app's lifespan and yield an in-process HTTP client."""
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
 
 
 @pytest.fixture
 async def db(migrated_dsn: str) -> AsyncIterator[asyncpg.Connection]:
+    """A connection to a database with every application table emptied."""
     conn = await asyncpg.connect(migrated_dsn)
+    tables = await conn.fetch(
+        "SELECT tablename FROM pg_tables WHERE schemaname='public' "
+        "AND tablename <> 'schema_migrations'"
+    )
+    if tables:
+        names = ", ".join(f'"{t["tablename"]}"' for t in tables)
+        await conn.execute(f"TRUNCATE {names} RESTART IDENTITY CASCADE")
     try:
         yield conn
     finally:
