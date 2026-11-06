@@ -10,4 +10,12 @@ The focus is the distributed-systems layer around the LLM call: effectively-once
 
 ## Status
 
-Early development. See the milestones in the spec.
+Early development: M0 (skeleton) in progress. See [docs/PROGRESS.md](docs/PROGRESS.md).
+
+## Quick start
+
+```bash
+make install   # uv sync + git hooks
+make up        # Postgres, Redis, api (:8000), ingest (:8001), worker
+make check     # lint, type check, tests (needs Docker)
+```
