@@ -75,6 +75,13 @@ services:
     environment: { ARGUS_SERVICE_NAME: argus-worker }
     command: ["argus-worker"]
 
+  # Free stand-in provider until a real LLM key is configured (ARGUS_LLM_BASE_URL).
+  mock-llm:
+    <<: *app
+    depends_on: []
+    environment: { ARGUS_SERVICE_NAME: argus-mock-llm }
+    command: ["uvicorn", "argus.mock_llm.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+
 volumes:
   pgdata:
   redisdata:
