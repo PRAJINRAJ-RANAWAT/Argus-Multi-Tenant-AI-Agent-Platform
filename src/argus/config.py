@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr = SecretStr("")
     llm_model: str = "mock-large"
     llm_timeout_s: float = 120.0
+    # LLM gateway. Routes: tier -> ordered model chain "provider:model" (first = primary).
+    llm_routes: str = (
+        '{"large": ["openai:mock-large", "openai:mock-small"],'
+        ' "small": ["openai:mock-small", "openai:mock-large"]}'
+    )
+    anthropic_base_url: str = ""  # e.g. https://api.anthropic.com/v1 (empty = disabled)
+    anthropic_api_key: SecretStr = SecretStr("")
+    tenant_tokens_per_min: int = 400_000
+    provider_requests_per_min: int = 600
+    qa_cache_threshold: float = 0.95
     # Embeddings (OpenAI-compatible /embeddings; defaults to the mock LLM server).
     embed_base_url: str = ""  # empty = llm_base_url
     embed_api_key: SecretStr = SecretStr("")

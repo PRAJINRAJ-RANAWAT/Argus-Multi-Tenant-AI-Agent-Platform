@@ -6,8 +6,9 @@ whole job with backoff). M5 replaces direct use with the LLM gateway.
 
 import json
 import time
+import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
@@ -41,6 +42,7 @@ class ChatResult:
     output_tokens: int
     latency_ms: float
     tool_calls: tuple[ToolCall, ...] = ()
+    cached_tokens: int = 0
 
 
 def _parse_tool_calls(message: dict[str, Any]) -> tuple[ToolCall, ...]:
@@ -58,6 +60,27 @@ def _parse_tool_calls(message: dict[str, Any]) -> tuple[ToolCall, ...]:
             ToolCall(id=str(tc.get("id") or f"call_{i}"), name=str(fn.get("name")), arguments=args)
         )
     return tuple(out)
+
+
+class ChatModel(Protocol):
+    """What agents call. ``model`` is a stable name used in step identity."""
+
+    model: str
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int = 1024,
+        temperature: float = 0.2,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ChatResult: ...
+
+
+class ModelSource(Protocol):
+    """Hands an agent a model bound to its tenant and run (budgets, accounting)."""
+
+    def for_run(self, tenant_id: uuid.UUID, run_id: uuid.UUID, agent: str) -> ChatModel: ...
 
 
 class LLMClient:
@@ -116,6 +139,11 @@ class LLMClient:
             tool_calls=_parse_tool_calls(message),
             model=body.get("model", model or self.model),
             input_tokens=int(usage.get("prompt_tokens", 0)),
+            cached_tokens=int((usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)),
             output_tokens=int(usage.get("completion_tokens", 0)),
             latency_ms=(time.perf_counter() - started) * 1000,
         )
+
+    def for_run(self, tenant_id: uuid.UUID, run_id: uuid.UUID, agent: str) -> "LLMClient":
+        """A direct client ignores run context (tests, tools); the gateway does not."""
+        return self

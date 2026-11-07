@@ -1,5 +1,6 @@
 """Hybrid search, find-callers and codebase Q&A against real Postgres and Redis."""
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -229,3 +230,46 @@ async def test_unverifiable_citations_are_flagged(env: Env) -> None:
     )
     assert [v["path"] for v in verified] == ["app/billing.py"]
     assert unverified == ["notes.txt:3-4", "secrets/prod.env:1-1"]
+
+
+async def test_repeat_question_is_answered_from_the_semantic_cache(env: Env) -> None:
+    from argus.agents.qa import create_qa_run
+    from argus.gateway.semcache import QACache
+
+    deps = QADeps(
+        env.pool,
+        env.github,
+        env.llm,
+        env.embedder,
+        "w1",
+        cache=QACache(env.pool, env.embedder, threshold=0.95),
+    )
+    q = StreamQueue(env.redis, JOBS_QA, "qa-workers", "w1")
+    await q.ensure_group()
+    results = []
+    for role in ("member", "member", "viewer"):
+        async with env.pool.acquire() as conn:
+            run_id, _ = await create_qa_run(
+                conn,
+                tenant_id=env.repo.tenant_id,
+                repo_id=env.repo.repo_id,
+                question="Where do we retry with backoff?",
+                requested_by="t",
+                role=role,
+            )
+        while await relay_once(env.pool, env.redis):
+            pass
+        [msg] = await q.read(block_ms=10)
+        await handle_qa_message(deps, msg)
+        await q.ack(msg)
+        row = await env.pool.fetchrow(
+            "SELECT result::text AS r, (SELECT count(*) FROM run_steps WHERE run_id = $1) AS n"
+            " FROM runs WHERE id = $1",
+            run_id,
+        )
+        assert row is not None
+        results.append((json.loads(row["r"]), row["n"]))
+    (first, n1), (second, n2), (third, n3) = results
+    assert not first.get("cache_hit") and n1 == 3
+    assert second["cache_hit"] and n2 == 0 and second["answer"] == first["answer"]
+    assert not third.get("cache_hit") and n3 == 3  # another role never reuses the answer

@@ -27,7 +27,13 @@ async def handle_one(queue: StreamQueue, handler: Handler, msg: Message) -> str:
         log.warning(
             "handler failed", extra={"msg_id": msg.id, "attempt": msg.attempt}, exc_info=True
         )
-        return await queue.retry(msg, f"{type(exc).__name__}: {exc}")
+        retry_after = getattr(exc, "retry_after_s", None)
+        return await queue.retry(
+            msg,
+            f"{type(exc).__name__}: {exc}",
+            min_delay_s=retry_after,
+            count_attempt=not getattr(exc, "is_wait", False),
+        )
     return "acked" if await queue.ack(msg) else "lost_ownership"
 
 

@@ -315,6 +315,7 @@ async def post_qa(
                 question=body.question,
                 requested_by=f"{p.actor_type}:{p.actor_id}",
                 idempotency_key=idempotency_key,
+                role=p.role,
             )
         except QAError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -594,6 +595,87 @@ async def list_audit(
                 "hash": r["hash"],
             }
             for r in rows
+        ],
+    }
+
+
+class BudgetRequest(BaseModel):
+    daily_tokens: int = Field(gt=0, le=10_000_000_000)
+    alert_pct: int = Field(default=80, ge=1, le=100)
+
+
+@api.put("/budget")
+async def put_budget(request: Request, p: CurrentPrincipal, body: BudgetRequest) -> dict[str, int]:
+    await require(request, p, "budgets:manage", "budget.set")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        await conn.execute(
+            """
+            INSERT INTO tenant_budgets (tenant_id, daily_tokens, alert_pct) VALUES ($1, $2, $3)
+            ON CONFLICT (tenant_id) DO UPDATE
+            SET daily_tokens = EXCLUDED.daily_tokens, alert_pct = EXCLUDED.alert_pct,
+                updated_at = now()
+            """,
+            p.tenant_id,
+            body.daily_tokens,
+            body.alert_pct,
+        )
+        await audit(
+            conn,
+            p.tenant_id,
+            actor_type=p.actor_type,
+            actor_id=p.actor_id,
+            action="budget.set",
+            target=None,
+            decision="allow",
+            details=body.model_dump(),
+        )
+    return body.model_dump()
+
+
+@api.get("/usage")
+async def get_usage(
+    request: Request, p: CurrentPrincipal, days: Annotated[int, Query(ge=1, le=90)] = 7
+) -> dict[str, object]:
+    await require(request, p, "runs:read", "usage.read")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        budget = await conn.fetchrow("SELECT daily_tokens, alert_pct FROM tenant_budgets")
+        daily = await conn.fetch(
+            "SELECT day, used, reserved, cost_usd FROM tenant_usage_daily"
+            " WHERE day > (now() AT TIME ZONE 'UTC')::date - $1::int ORDER BY day DESC",
+            days,
+        )
+        models = await conn.fetch(
+            """
+            SELECT model, count(*) AS calls, sum(input_tokens) AS input,
+                   sum(output_tokens) AS output, sum(cached_tokens) AS cached,
+                   sum(cost_usd) AS cost, count(*) FILTER (WHERE status <> 'ok') AS errors
+            FROM llm_calls WHERE created_at > now() - make_interval(days => $1)
+            GROUP BY model ORDER BY model
+            """,
+            days,
+        )
+    return {
+        "budget": dict(budget) if budget else None,
+        "daily": [
+            {
+                "day": r["day"].isoformat(),
+                "used": r["used"],
+                "reserved": r["reserved"],
+                "cost_usd": float(r["cost_usd"]),
+            }
+            for r in daily
+        ],
+        "models": [
+            {
+                "model": r["model"],
+                "calls": r["calls"],
+                "input_tokens": r["input"],
+                "output_tokens": r["output"],
+                "cached_tokens": r["cached"],
+                "cost_usd": float(r["cost"]),
+                "errors": r["errors"],
+            }
+            for r in models
         ],
     }
 

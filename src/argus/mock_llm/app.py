@@ -8,6 +8,7 @@ repeatable. Faults are configurable at startup (env) and at runtime
 * ``error_rate_500`` / ``error_rate_429``: probability of an injected failure
 * ``retry_after_s``: ``Retry-After`` header on injected 429s
 * ``outage``: every request returns 500 (provider outage drill)
+* ``fail_models``: requests for these models return 500 (one provider/model down)
 * ``tool_script``: tool calls to make, one per turn, when the request offers tools.
   Turn N (N = tool results so far) calls ``tool_script[N]``; afterwards it answers in
   text. The default script reads the diff if a ``get_pr_diff`` tool is offered.
@@ -40,6 +41,7 @@ class Faults(BaseModel):
     outage: bool = False
     seed: int | None = None
     tool_script: list[dict[str, Any]] | None = None
+    fail_models: list[str] = []  # models that return 500 (per-model outage drill)
 
 
 class MockSettings(BaseSettings):
@@ -116,6 +118,7 @@ class FaultState:
         self.faults = faults
         self.rng = random.Random(faults.seed)
         self.requests = 0
+        self.by_model: dict[str, int] = {}
 
     def update(self, faults: Faults) -> None:
         self.faults = faults
@@ -127,9 +130,9 @@ class FaultState:
         if ms:
             await asyncio.sleep(ms / 1000)
 
-    def injected_error(self) -> JSONResponse | None:
+    def injected_error(self, model: str | None = None) -> JSONResponse | None:
         f = self.faults
-        if f.outage or self.rng.random() < f.error_rate_500:
+        if f.outage or model in f.fail_models or self.rng.random() < f.error_rate_500:
             return JSONResponse(
                 {"error": {"type": "server_error", "message": "mock: injected 500"}},
                 status_code=500,
@@ -164,6 +167,66 @@ def create_app(faults: Faults | None = None) -> FastAPI:
         state.update(new)
         return state.faults.model_dump()
 
+    @app.post("/v1/messages", response_model=None)
+    async def messages_api(request: Request) -> JSONResponse:
+        """Anthropic Messages API shape, driven by the same canned logic."""
+        state.requests += 1
+        body = await request.json()
+        model = str(body.get("model") or "mock-claude")
+        state.by_model[model] = state.by_model.get(model, 0) + 1
+        await state.delay()
+        if (err := state.injected_error(model)) is not None:
+            return err
+        system = body.get("system") or ""
+        if isinstance(system, list):
+            system = " ".join(str(b.get("text", "")) for b in system)
+        flat: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        for m in body.get("messages") or []:
+            content = m.get("content")
+            if isinstance(content, str):
+                flat.append({"role": m["role"], "content": content})
+                continue
+            for block in content or []:
+                if block.get("type") == "tool_result":
+                    flat.append({"role": "tool", "content": str(block.get("content", ""))})
+                elif block.get("type") == "text":
+                    flat.append({"role": m["role"], "content": block.get("text", "")})
+        tools = [{"function": {"name": t["name"]}} for t in body.get("tools") or []]
+        call = next_tool_call(flat, tools, state.faults.tool_script) if tools else None
+        prompt_tokens = sum(estimate_tokens(_text_of(m)) for m in flat)
+        cached = estimate_tokens(system) if body.get("system") else 0
+        if call is not None:
+            content_blocks: list[dict[str, Any]] = [
+                {
+                    "type": "tool_use",
+                    "id": call["id"],
+                    "name": call["function"]["name"],
+                    "input": json.loads(call["function"]["arguments"]),
+                }
+            ]
+            out_tokens = 10
+            stop = "tool_use"
+        else:
+            text = canned_completion(flat)
+            content_blocks = [{"type": "text", "text": text}]
+            out_tokens = estimate_tokens(text)
+            stop = "end_turn"
+        return JSONResponse(
+            {
+                "id": f"msg_{uuid.uuid4().hex[:12]}",
+                "type": "message",
+                "role": "assistant",
+                "model": model,
+                "content": content_blocks,
+                "stop_reason": stop,
+                "usage": {
+                    "input_tokens": max(0, prompt_tokens - cached),
+                    "output_tokens": out_tokens,
+                    "cache_read_input_tokens": cached,
+                },
+            }
+        )
+
     @app.post("/v1/embeddings", response_model=None)
     async def embeddings(request: Request) -> JSONResponse:
         state.requests += 1
@@ -194,8 +257,9 @@ def create_app(faults: Faults | None = None) -> FastAPI:
         body = await request.json()
         messages: list[dict[str, Any]] = body.get("messages") or []
         model = str(body.get("model") or "mock-large")
+        state.by_model[model] = state.by_model.get(model, 0) + 1
         await state.delay()
-        if (err := state.injected_error()) is not None:
+        if (err := state.injected_error(model)) is not None:
             return err
         tools = body.get("tools") or []
         call = next_tool_call(messages, tools, state.faults.tool_script) if tools else None

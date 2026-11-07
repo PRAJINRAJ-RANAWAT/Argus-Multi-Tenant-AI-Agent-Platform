@@ -461,3 +461,36 @@ async def test_run_events_are_delivered_only_to_their_tenant(env: Env, migrated_
         assert events.subscribers == 0
     finally:
         await events.stop()
+
+
+async def test_budget_and_usage_endpoints(env: Env) -> None:
+    admin = await make_api_key(env.pool, env.a.id, role="admin")
+    member = await make_api_key(env.pool, env.a.id, role="member")
+    await env.pool.execute(
+        "INSERT INTO llm_calls (tenant_id, tier, provider, model, route_reason, status,"
+        " input_tokens, output_tokens, cost_usd) VALUES ($1, 'large', 'openai', 'mock-large',"
+        " 'primary', 'ok', 100, 50, 0.001), ($2, 'large', 'openai', 'mock-large', 'primary',"
+        " 'ok', 999, 999, 9)",
+        env.a.id,
+        env.b.id,
+    )
+    async with app_client(env.api()) as c:
+        ha, hm = {"authorization": f"Bearer {admin}"}, {"authorization": f"Bearer {member}"}
+        assert (
+            await c.put("/api/budget", json={"daily_tokens": 5000}, headers=hm)
+        ).status_code == 403
+        r = await c.put("/api/budget", json={"daily_tokens": 5000, "alert_pct": 90}, headers=ha)
+        assert r.json() == {"daily_tokens": 5000, "alert_pct": 90}
+        usage = (await c.get("/api/usage", headers=hm)).json()
+    assert usage["budget"] == {"daily_tokens": 5000, "alert_pct": 90}
+    assert usage["models"] == [
+        {
+            "model": "mock-large",
+            "calls": 1,
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_tokens": 0,
+            "cost_usd": 0.001,
+            "errors": 0,
+        }
+    ]  # tenant B's calls are invisible
