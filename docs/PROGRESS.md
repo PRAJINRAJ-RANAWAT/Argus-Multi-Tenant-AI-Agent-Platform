@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**M2 · Durable agent runtime**: complete (M2a merged as `v0.2.0`, M2b in review). Next: M3 · Code RAG.
+**M3 · Code RAG**: in review. Next: M4 · Tenancy and auth.
 
 M1's live "done when" (install the App → a review appears) is still waiting on the VPS and GitHub App (blockers below).
 
@@ -54,16 +54,29 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - PR review = tool loop + one runtime-posted comment. ADR 0007.
 - Tests (118 total): model drives 4 read tools then one comment; `open_issue`/`post_review_comment`/unknown tool from the model denied and audited, no issue created; traversal and missing file are tool errors; GitHub 502 on a tool → retry, step attempts 2, one comment; model never sees write tools or `idempotency_key`; `kill -9` while posting → resume replays 3 steps, one comment.
 
+### M2 · Durable agent runtime (merged, `v0.2.0` + `v0.2.1`)
+
+### M3 · Code RAG
+- Migration 0005: `code_files` (per path, guarded by event receipt time, tombstones), `code_chunks` (vector(256) HNSW + `tsvector` GIN), `code_refs` (call graph), per-tenant `embeddings` cache, `repo_index_state`. Migration 0006: run `input` / `requested_by`.
+- tree-sitter chunking (Python, JS, TS/TSX, Go): functions, `Class.method`, class headers, module gaps, long-span splits, call edges; docs/text by line windows; vendored/lock/binary/huge files skipped. Hash covers embedded text, not line numbers.
+- Indexing on `jobs:index`: `push` to the default branch → changed paths only (full index if ≥20 commits or forced); `installation` / `installation_repositories` → full index. Only cache misses are embedded.
+- Embedders: deterministic hashing embedder (also `/v1/embeddings` on the mock LLM), OpenAI-compatible HTTP embedder with `dimensions=256`.
+- Hybrid search (full-text + vector, RRF, lexical re-rank) with tenant/repo filters inside SQL; citations `path:start-end@sha` + GitHub links; `find_callers` from the call graph.
+- `argus-code` MCP tools `search_code`, `find_callers` (reviewer and Q&A).
+- Codebase Q&A: `POST /api/qa` (outbox → `jobs:qa`, Idempotency-Key), `GET /api/runs/{id}`; tool loop over search/callers/read_file; citations verified against the index. Admin token until M4. ADR 0008.
+- Tests (140 total): **one-line push embeds exactly one chunk**; push webhook end to end reads only the changed file; installation → full index; late older push never overwrites newer content; deletes leave tombstones that beat late events; 6 concurrent indexers of one file stay consistent; call graph; embedding cache never crosses tenants; search by meaning and identifier; search never crosses tenants or repos (even with a foreign repo id); Q&A end to end with verified citations and idempotent create.
+
 ## Next
 
-- **M3 · Code RAG:** tree-sitter chunking, incremental indexing on push (own queue + workers), pgvector + full-text hybrid search, re-ranking, cited answers; `search_code` / `find_callers` tools in `argus-code`; Codebase Q&A. Done when a one-line push re-embeds only the changed chunk.
+- **M4 · Tenancy and auth:** GitHub OAuth login, sessions, roles (`owner`/`admin`/`member`/`viewer`), effective permission = role ∧ GitHub repo permission, row-level security with `app.tenant_id`, hashed API keys, append-only audit log (hash-chained), dashboard with live runs over SSE. Done when tests prove tenant A cannot read tenant B's runs, code or answers.
 
 ## Blockers waiting on the owner
 
 1. **VPS + domain + DNS** for the deployed hello-world (M0 "done when"). Steps in `docs/deploy.md` §1–4.
 2. **Repo secrets** `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS` and variable `ARGUS_DOMAIN` (`docs/deploy.md` §5).
 3. **GitHub App** registration and install on a test repo: `docs/github-app.md`. Needed for M1's live "done when".
-4. (Optional, costs money) a real LLM provider key. Until then the bundled mock LLM produces canned reviews.
+4. (Optional) Slack app for Q&A in Slack; Q&A is available over the API meanwhile.
+5. (Optional, costs money) a real LLM provider key. Until then the bundled mock LLM produces canned reviews.
 
 ## Open questions
 

@@ -34,10 +34,19 @@ class AgentToolPolicy:
 
 POLICIES: dict[str, AgentToolPolicy] = {
     "pr_review": AgentToolPolicy(
-        model_tools=frozenset({"get_pr_diff", "list_changed_files", "read_file", "get_ci_status"}),
+        model_tools=frozenset(
+            {
+                "get_pr_diff",
+                "list_changed_files",
+                "read_file",
+                "get_ci_status",
+                "search_code",
+                "find_callers",
+            }
+        ),
         runtime_tools=frozenset({"post_review_comment"}),
     ),
-    "qa": AgentToolPolicy(model_tools=frozenset({"read_file", "list_changed_files"})),
+    "qa": AgentToolPolicy(model_tools=frozenset({"search_code", "find_callers", "read_file"})),
 }
 
 

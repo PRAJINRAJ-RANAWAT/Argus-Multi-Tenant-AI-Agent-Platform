@@ -507,7 +507,14 @@ async def test_model_never_sees_write_tools_or_runtime_args(env: Env) -> None:
     servers = [build_code_server(ctx), build_github_server(ctx)]
     async with ToolHub(servers, POLICIES["pr_review"]) as hub:
         names = {s["function"]["name"] for s in hub.model_specs()}
-        assert names == {"get_pr_diff", "list_changed_files", "read_file", "get_ci_status"}
+        assert names == {
+            "get_pr_diff",
+            "list_changed_files",
+            "read_file",
+            "get_ci_status",
+            "search_code",
+            "find_callers",
+        }
         with pytest.raises(ToolDeniedError):
             await hub.call("post_review_comment", {"body": "x"}, by_model=True)
         with pytest.raises(ToolDeniedError):

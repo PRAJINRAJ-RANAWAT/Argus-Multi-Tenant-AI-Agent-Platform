@@ -1,4 +1,5 @@
-"""Worker process: ``jobs:review`` (PR review agent) and ``jobs:index`` (code indexing)."""
+"""Worker process: ``jobs:review`` (PR review), ``jobs:index`` (code indexing) and
+``jobs:qa`` (codebase Q&A)."""
 
 import asyncio
 import contextlib
@@ -14,6 +15,8 @@ from redis.asyncio import Redis
 
 from argus.agents.pr_review import AGENT_TYPE as PR_REVIEW
 from argus.agents.pr_review import ReviewDeps, handle_review_message
+from argus.agents.qa import AGENT_TYPE as QA_AGENT
+from argus.agents.qa import QADeps, handle_qa_message
 from argus.config import Settings, get_settings
 from argus.db.pool import create_pool
 from argus.github.auth import InstallationTokenProvider
@@ -22,7 +25,7 @@ from argus.llm.client import LLMClient
 from argus.logging import configure_logging
 from argus.queue.consumer import run_consumer
 from argus.queue.streams import StreamQueue
-from argus.queue.topics import JOBS_INDEX, JOBS_REVIEW
+from argus.queue.topics import JOBS_INDEX, JOBS_QA, JOBS_REVIEW
 from argus.rag.embed import HttpEmbedder
 from argus.rag.jobs import IndexDeps, handle_index_message
 from argus.runs import reap_runs
@@ -31,8 +34,9 @@ log = logging.getLogger("argus.worker")
 
 REVIEW_GROUP = "review-workers"
 INDEX_GROUP = "index-workers"
+QA_GROUP = "qa-workers"
 REAP_INTERVAL_S = 10.0
-TOPIC_FOR_AGENT = {PR_REVIEW: JOBS_REVIEW}
+TOPIC_FOR_AGENT = {PR_REVIEW: JOBS_REVIEW, QA_AGENT: JOBS_QA}
 
 
 async def reaper_loop(pool: asyncpg.Pool, stop: asyncio.Event, interval_s: float) -> None:
@@ -77,23 +81,26 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
             redis=redis,
             worker_id=worker_id,
         )
-        index_deps = IndexDeps(
-            pool=pool,
-            github=deps.github,
-            embedder=HttpEmbedder(
-                http,
-                base_url=settings.embed_base_url or settings.llm_base_url,
-                api_key=(
-                    settings.embed_api_key.get_secret_value()
-                    or settings.llm_api_key.get_secret_value()
-                ),
-                model=settings.embed_model,
+        embedder = HttpEmbedder(
+            http,
+            base_url=settings.embed_base_url or settings.llm_base_url,
+            api_key=(
+                settings.embed_api_key.get_secret_value() or settings.llm_api_key.get_secret_value()
             ),
+            model=settings.embed_model,
         )
+        deps.embedder = embedder
+        index_deps = IndexDeps(pool=pool, github=deps.github, embedder=embedder)
+        qa_deps = QADeps(
+            pool=pool, github=deps.github, llm=deps.llm, embedder=embedder, worker_id=worker_id
+        )
+
         review_q = StreamQueue(redis, JOBS_REVIEW, REVIEW_GROUP, worker_id)
         index_q = StreamQueue(redis, JOBS_INDEX, INDEX_GROUP, worker_id)
+        qa_q = StreamQueue(redis, JOBS_QA, QA_GROUP, worker_id)
         log.info(
-            "worker started", extra={"worker_id": worker_id, "streams": [JOBS_REVIEW, JOBS_INDEX]}
+            "worker started",
+            extra={"worker_id": worker_id, "streams": [JOBS_REVIEW, JOBS_INDEX, JOBS_QA]},
         )
         reaper = asyncio.create_task(reaper_loop(pool, stop, REAP_INTERVAL_S))
         try:
@@ -109,6 +116,12 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
                     functools.partial(handle_index_message, index_deps),
                     stop,
                     concurrency=settings.index_concurrency,
+                ),
+                run_consumer(
+                    qa_q,
+                    functools.partial(handle_qa_message, qa_deps),
+                    stop,
+                    concurrency=settings.worker_concurrency,
                 ),
             )
         finally:

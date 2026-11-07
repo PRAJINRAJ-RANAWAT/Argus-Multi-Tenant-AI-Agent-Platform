@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -69,7 +70,15 @@ def next_tool_call(
     """The scripted tool call for this turn, as an OpenAI ``tool_calls`` entry, or None."""
     offered = [str((t.get("function") or {}).get("name")) for t in tools]
     if script is None:
-        script = [{"name": "get_pr_diff", "arguments": {}}] if "get_pr_diff" in offered else []
+        if "get_pr_diff" in offered:
+            script = [{"name": "get_pr_diff", "arguments": {}}]
+        elif "search_code" in offered:
+            users = [_text_of(m) for m in messages if m.get("role") == "user"]
+            question = re.sub(r"<[^>]+>", " ", users[-1] if users else "")
+            question = " ".join(question.split()[-40:])
+            script = [{"name": "search_code", "arguments": {"query": question}}]
+        else:
+            script = []
     turn = sum(1 for m in messages if m.get("role") == "tool")
     if turn >= len(script):
         return None
@@ -94,6 +103,11 @@ def canned_completion(messages: list[dict[str, Any]]) -> str:
             "- Check that retries are bounded and use backoff with jitter.\n\n"
             f"_mock review {digest}_"
         )
+    for m in reversed(messages):
+        if m.get("role") == "tool":
+            cite = re.search(r'"citation":\s*"([^"@]+)@', _text_of(m))
+            if cite:
+                return f"The relevant code is in {cite.group(1)} (mock answer {digest})."
     return f"This is a mock answer ({digest})."
 
 
