@@ -40,3 +40,7 @@ pnpm-debug.log*
 # Local data
 *.log
 .data/
+
+# Frontend
+node_modules/
+src/argus/api/web/

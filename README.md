@@ -183,7 +183,7 @@ Then open:
 
 | What | URL |
 |---|---|
-| Dashboard (signs you in as a demo owner) | http://localhost:8000/auth/dev-login?login=demo |
+| **Web app** (signs you in as a demo owner) | http://localhost:8000/auth/dev-login?login=demo |
 | Reviews Argus posted (fake GitHub) | http://localhost:9000/_fake/comments |
 | API docs | http://localhost:8000/docs |
 | Grafana ("Argus overview") | http://localhost:3000 |
@@ -191,6 +191,21 @@ Then open:
 | Prometheus | http://localhost:9090 |
 
 The seeded PRs carry planted bugs (SQL injection, a hardcoded secret, off-by-one, a missing None check), one clean PR and one with a prompt injection. Ask the codebase from the dashboard, e.g. "How do we retry with exponential backoff?". `make demo-down` stops it.
+
+## Web app
+
+`frontend/` is a React app (Vite, TypeScript, Tailwind, shadcn/ui on Radix) served by the API at `/app`. Its design follows the reference site's identity: ink-on-paper colours with a single neon-green accent, hard offset shadows, uppercase Montserrat display type, Space Grotesk for UI text and JetBrains Mono for numbers, in light, dark and system themes.
+
+| Page | What it does |
+|---|---|
+| Overview | KPIs, runs per day, top repositories, live activity over SSE, judge score and feedback |
+| Runs | Search, filter, sort and paginate every run; open one to see the posted review or answer, citations and guardrail findings |
+| Ask the code | Codebase Q&A with verified citations to file and line |
+| Approvals | Approve or reject write actions waiting for a person |
+| Usage & budget | Tokens, cost, model calls, and the daily budget (sliders) |
+| Access · Audit log · Settings | API keys and roles, the hash-chained audit log, approval switches and theme |
+
+Develop with hot reload against the running API: `cd frontend && npm install && npm run dev`, then open http://localhost:5173/auth/dev-login?login=demo&next=/app/. `npm run build` writes into `src/argus/api/web`; the Docker image builds it automatically.
 
 ## Quick start
 

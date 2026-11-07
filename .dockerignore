@@ -9,3 +9,5 @@
 node_modules
 docs
 tests
+frontend/node_modules
+src/argus/api/web
