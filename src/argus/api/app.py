@@ -20,7 +20,13 @@ from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel, Field
 
 from argus.agents.qa import QAError, create_qa_run
@@ -50,6 +56,7 @@ from argus.service import build_app
 from .events import RunEvents
 
 DASHBOARD_HTML = Path(__file__).with_name("dashboard.html")
+WEB_DIST = Path(__file__).with_name("web")  # Vite build output (frontend/), see Dockerfile
 SSE_HEARTBEAT_S = 15.0
 
 
@@ -225,8 +232,15 @@ def _oauth(request: Request) -> OAuthConfig:
     )
 
 
+@auth.get("/config")
+async def auth_config(request: Request) -> dict[str, bool]:
+    """Which sign-in methods this deployment offers (for the sign-in page)."""
+    s = _resources(request).settings
+    return {"github": bool(s.github_oauth_client_id), "dev_login": s.env == "dev" and s.dev_login}
+
+
 @auth.get("/github/login")
-async def login(request: Request, next: str = "/dashboard") -> RedirectResponse:
+async def login(request: Request, next: str = "/app/") -> RedirectResponse:
     url = await begin_login(_resources(request).redis, _oauth(request), next)
     return RedirectResponse(url, status_code=302)
 
@@ -268,7 +282,7 @@ async def callback(request: Request, code: str = "", state: str = "") -> Redirec
 
 
 @auth.get("/dev-login")
-async def dev_login(request: Request, login: str = "demo", next: str = "/dashboard") -> Response:
+async def dev_login(request: Request, login: str = "demo", next: str = "/app/") -> Response:
     """Local demo sign-in: owner of every tenant. Off unless ARGUS_ENV=dev and
     ARGUS_DEV_LOGIN=true; never enabled in production."""
     res = _resources(request)
@@ -295,7 +309,7 @@ async def dev_login(request: Request, login: str = "demo", next: str = "/dashboa
             user_id,
         )
     session_id = await create_session(res.redis, user_id, login, res.settings.session_ttl_s)
-    target = next if next.startswith("/") and not next.startswith("//") else "/dashboard"
+    target = next if next.startswith("/") and not next.startswith("//") else "/app/"
     resp = RedirectResponse(target, status_code=302)
     resp.set_cookie(
         COOKIE,
@@ -386,6 +400,7 @@ def _run_json(row: Any, repo: str | None) -> dict[str, object]:
         "agent_type": row["agent_type"],
         "repo": repo,
         "pr_number": row["pr_number"],
+        "question": row["question"],
         "status": row["status"],
         "result": json.loads(row["result"]) if row["result"] else None,
         "error": row["error"],
@@ -398,11 +413,23 @@ def _run_json(row: Any, repo: str | None) -> dict[str, object]:
 
 _RUN_SELECT = """
     SELECT r.id, r.agent_type, r.repo_id, r.pr_number, r.status, r.result::text AS result,
+           r.input ->> 'question' AS question,
            r.error, r.input_tokens, r.output_tokens, r.created_at, r.finished_at,
            (SELECT count(*) FROM run_steps s WHERE s.run_id = r.id) AS steps,
            p.full_name, p.private
     FROM runs r LEFT JOIN repos p ON p.id = r.repo_id
 """
+
+# Fixed filter with optional parameters: $1 readable repo ids, $2 include repo-less runs,
+# $3 status, $4 agent, $5 ILIKE pattern on repo name or question (NULL = no filter).
+_RUN_FILTER = """
+    WHERE (r.repo_id = ANY($1::uuid[]) OR (r.repo_id IS NULL AND $2))
+      AND ($3::text IS NULL OR r.status = $3)
+      AND ($4::text IS NULL OR r.agent_type = $4)
+      AND ($5::text IS NULL OR p.full_name ILIKE $5 OR r.input ->> 'question' ILIKE $5)
+"""
+_RUN_COUNT = "SELECT count(*) FROM runs r LEFT JOIN repos p ON p.id = r.repo_id" + _RUN_FILTER  # noqa: S608 - literals only
+_RUN_PAGE = _RUN_SELECT + _RUN_FILTER + " ORDER BY r.created_at DESC LIMIT $6 OFFSET $7"
 
 
 async def _visible(request: Request, p: Principal, rows: list[Any]) -> list[Any]:
@@ -418,15 +445,157 @@ async def _visible(request: Request, p: Principal, rows: list[Any]) -> list[Any]
     return out
 
 
+async def _visible_repo_ids(request: Request, p: Principal, conn: Any) -> list[uuid.UUID]:
+    """Repos in the tenant that the caller can read (role + their GitHub permission)."""
+    access: RepoAccess = _x(request, "repo_access")
+    rows = await conn.fetch("SELECT id, full_name, private FROM repos")
+    return [
+        r["id"]
+        for r in rows
+        if await access.can_read(p, RepoInfo(r["id"], r["full_name"], r["private"]))
+    ]
+
+
 @api.get("/runs")
 async def list_runs(
-    request: Request, p: CurrentPrincipal, limit: Annotated[int, Query(ge=1, le=200)] = 50
+    request: Request,
+    p: CurrentPrincipal,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+    status: Annotated[str | None, Query(max_length=32)] = None,
+    agent: Annotated[str | None, Query(max_length=32)] = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
 ) -> dict[str, object]:
+    """Runs newest first, filtered by status, agent and repo name, with the total for
+    pagination. Only runs in repos the caller can read are counted or returned."""
     await require(request, p, "runs:read", "runs.list")
     async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
-        rows = await conn.fetch(_RUN_SELECT + " ORDER BY r.created_at DESC LIMIT $1", limit)
-    rows = await _visible(request, p, rows)
-    return {"runs": [_run_json(r, r["full_name"]) for r in rows]}
+        repo_ids = await _visible_repo_ids(request, p, conn)
+        args = [repo_ids, p.repo_ids is None, status, agent, f"%{q}%" if q else None]
+        total = await conn.fetchval(_RUN_COUNT, *args)
+        rows = await conn.fetch(_RUN_PAGE, *args, limit, offset)
+    return {
+        "runs": [_run_json(r, r["full_name"]) for r in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@api.get("/overview")
+async def overview(
+    request: Request, p: CurrentPrincipal, days: Annotated[int, Query(ge=1, le=90)] = 14
+) -> dict[str, object]:
+    """Aggregates for the dashboard home, computed from real runs in readable repos."""
+    await require(request, p, "runs:read", "overview.read")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        repo_ids = await _visible_repo_ids(request, p, conn)
+        scope = (
+            "(r.repo_id = ANY($1::uuid[]) OR (r.repo_id IS NULL AND $2))"
+            " AND r.created_at > now() - make_interval(days => $3)"
+        )
+        args = [repo_ids, p.repo_ids is None, days]
+        totals = await conn.fetchrow(
+            f"""
+            SELECT count(*) AS runs,
+                   count(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+                   count(*) FILTER (WHERE status = 'failed') AS failed,
+                   count(*) FILTER (WHERE status IN ('queued', 'running')) AS active,
+                   count(*) FILTER (WHERE status = 'waiting_approval') AS waiting,
+                   count(*) FILTER (WHERE status = 'superseded') AS superseded,
+                   count(*) FILTER (WHERE agent_type = 'pr_review') AS reviews,
+                   count(*) FILTER (WHERE agent_type = 'qa') AS questions,
+                   count(*) FILTER (
+                       WHERE result -> 'guardrails' ->> 'injection_flagged' = 'true') AS flagged,
+                   coalesce(sum(input_tokens + output_tokens), 0) AS tokens,
+                   percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM
+                       finished_at - started_at)) FILTER (WHERE status = 'succeeded')
+                       AS p50_s,
+                   percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM
+                       finished_at - started_at)) FILTER (WHERE status = 'succeeded')
+                       AS p95_s
+            FROM runs r WHERE {scope}
+            """,  # noqa: S608 - constant SQL, parameters bound
+            *args,
+        )
+        daily = await conn.fetch(
+            f"""
+            SELECT (created_at AT TIME ZONE 'UTC')::date AS day,
+                   count(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+                   count(*) FILTER (WHERE status = 'failed') AS failed,
+                   count(*) FILTER (WHERE status NOT IN ('succeeded', 'failed')) AS other
+            FROM runs r WHERE {scope} GROUP BY 1 ORDER BY 1
+            """,  # noqa: S608
+            *args,
+        )
+        repos = await conn.fetch(
+            f"""
+            SELECT p.full_name, count(*) AS runs,
+                   count(*) FILTER (WHERE r.status = 'succeeded') AS succeeded
+            FROM runs r JOIN repos p ON p.id = r.repo_id WHERE {scope}
+            GROUP BY 1 ORDER BY 2 DESC LIMIT 6
+            """,  # noqa: S608
+            *args,
+        )
+        pending = await conn.fetchval("SELECT count(*) FROM approvals WHERE status = 'pending'")
+    t = dict(totals) if totals else {}
+    finished = (t.get("succeeded") or 0) + (t.get("failed") or 0)
+    return {
+        "days": days,
+        "totals": {k: (float(v) if isinstance(v, float) else v) for k, v in t.items()},
+        "success_rate": round(t["succeeded"] / finished, 4) if finished else None,
+        "pending_approvals": pending,
+        "daily": [
+            {
+                "day": r["day"].isoformat(),
+                "succeeded": r["succeeded"],
+                "failed": r["failed"],
+                "other": r["other"],
+            }
+            for r in daily
+        ],
+        "top_repos": [dict(r) for r in repos],
+    }
+
+
+@api.get("/repos")
+async def list_repos(request: Request, p: CurrentPrincipal) -> dict[str, object]:
+    """Repositories the caller can read, with their code-index state (for Q&A)."""
+    await require(request, p, "runs:read", "repos.list")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        repo_ids = await _visible_repo_ids(request, p, conn)
+        rows = await conn.fetch(
+            """
+            SELECT p.id, p.full_name, p.private, s.last_commit, s.last_full_index,
+                   (SELECT count(*) FROM code_chunks c WHERE c.repo_id = p.id) AS chunks
+            FROM repos p LEFT JOIN repo_index_state s ON s.repo_id = p.id
+            WHERE p.id = ANY($1::uuid[]) ORDER BY p.full_name
+            """,
+            repo_ids,
+        )
+    return {
+        "repos": [
+            {
+                "id": str(r["id"]),
+                "full_name": r["full_name"],
+                "private": r["private"],
+                "indexed_commit": r["last_commit"],
+                "chunks": r["chunks"],
+                "last_full_index": r["last_full_index"].isoformat()
+                if r["last_full_index"]
+                else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@api.get("/settings")
+async def get_settings_api(request: Request, p: CurrentPrincipal) -> dict[str, object]:
+    await require(request, p, "runs:read", "settings.read")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        tools = await conn.fetchval("SELECT require_approval_for FROM tenant_settings")
+    return {"require_approval_for": sorted(tools or []), "write_tools": sorted(WRITE_TOOLS)}
 
 
 @api.get("/runs/stream")
@@ -572,10 +741,18 @@ async def revoke_key(request: Request, p: CurrentPrincipal, key_id: uuid.UUID) -
 async def list_members(request: Request, p: CurrentPrincipal) -> dict[str, object]:
     await require(request, p, "keys:manage", "members.list")
     async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
-        rows = await conn.fetch("SELECT user_id, role, source FROM memberships ORDER BY created_at")
+        rows = await conn.fetch("SELECT * FROM argus_tenant_members($1)", p.tenant_id)
     return {
         "members": [
-            {"user_id": str(r["user_id"]), "role": r["role"], "source": r["source"]} for r in rows
+            {
+                "user_id": str(r["user_id"]),
+                "github_login": r["github_login"],
+                "name": r["name"],
+                "role": r["role"],
+                "source": r["source"],
+                "last_login_at": r["last_login_at"].isoformat() if r["last_login_at"] else None,
+            }
+            for r in rows
         ]
     }
 
@@ -951,11 +1128,38 @@ def create_app(
     def configure(app: FastAPI) -> None:
         @app.get("/")
         async def root() -> dict[str, str]:
-            return {"name": "Argus", "message": "Hello from Argus", "dashboard": "/dashboard"}
+            return {"name": "Argus", "message": "Hello from Argus", "app": "/app/"}
 
-        @app.get("/dashboard", response_class=HTMLResponse)
-        async def dashboard() -> HTMLResponse:
-            return HTMLResponse(DASHBOARD_HTML.read_text())
+        @app.get("/dashboard", response_model=None)
+        async def dashboard() -> Response:
+            if (WEB_DIST / "index.html").exists():
+                return RedirectResponse("/app/", status_code=307)
+            return HTMLResponse(DASHBOARD_HTML.read_text())  # fallback without a built SPA
+
+        @app.get("/app", include_in_schema=False)
+        async def app_root() -> RedirectResponse:
+            return RedirectResponse("/app/", status_code=307)
+
+        @app.get("/app/{path:path}", include_in_schema=False, response_model=None)
+        async def spa(path: str) -> Response:
+            """The React app (built into argus/api/web). Real files are served as-is;
+            any other path gets index.html so client-side routes work on reload."""
+            index = WEB_DIST / "index.html"
+            if not index.exists():
+                return HTMLResponse(
+                    "<p>The web app is not built. Run <code>npm run build</code> in "
+                    "<code>frontend/</code>, or use <code>/dashboard</code>.</p>",
+                    status_code=404,
+                )
+            candidate = (WEB_DIST / path).resolve()
+            if path and candidate.is_file() and WEB_DIST.resolve() in candidate.parents:
+                cache = (
+                    "public, max-age=31536000, immutable"
+                    if path.startswith("assets/")
+                    else "no-cache"
+                )
+                return FileResponse(candidate, headers={"Cache-Control": cache})
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
         app.include_router(admin)
         app.include_router(auth)
