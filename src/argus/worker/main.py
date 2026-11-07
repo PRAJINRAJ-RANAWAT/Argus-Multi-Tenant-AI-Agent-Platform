@@ -71,6 +71,7 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
                 api_key=settings.llm_api_key.get_secret_value(),
                 model=settings.llm_model,
             ),
+            redis=redis,
             worker_id=worker_id,
         )
         queue = StreamQueue(redis, JOBS_REVIEW, REVIEW_GROUP, worker_id)
