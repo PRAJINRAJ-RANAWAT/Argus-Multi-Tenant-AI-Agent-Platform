@@ -71,3 +71,50 @@ class GitHubClient:
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
         return data
+
+    async def get_file(self, installation_id: int, repo: str, path: str, ref: str) -> str | None:
+        """File contents at ``ref``; None if it does not exist."""
+        resp = await self.http.get(
+            f"{self.api_url}/repos/{repo}/contents/{path.lstrip('/')}",
+            params={"ref": ref},
+            headers=await self._headers(installation_id, "application/vnd.github.raw+json"),
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.text
+
+    async def list_pr_files(
+        self, installation_id: int, repo: str, number: int
+    ) -> list[dict[str, Any]]:
+        resp = await self.http.get(
+            f"{self.api_url}/repos/{repo}/pulls/{number}/files",
+            params={"per_page": 100},
+            headers=await self._headers(installation_id, "application/vnd.github+json"),
+        )
+        resp.raise_for_status()
+        data: list[dict[str, Any]] = resp.json()
+        return data
+
+    async def get_combined_status(
+        self, installation_id: int, repo: str, ref: str
+    ) -> dict[str, Any]:
+        resp = await self.http.get(
+            f"{self.api_url}/repos/{repo}/commits/{ref}/status",
+            headers=await self._headers(installation_id, "application/vnd.github+json"),
+        )
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def create_issue(
+        self, installation_id: int, repo: str, title: str, body: str
+    ) -> dict[str, Any]:
+        resp = await self.http.post(
+            f"{self.api_url}/repos/{repo}/issues",
+            json={"title": title, "body": body},
+            headers=await self._headers(installation_id, "application/vnd.github+json"),
+        )
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+        return data

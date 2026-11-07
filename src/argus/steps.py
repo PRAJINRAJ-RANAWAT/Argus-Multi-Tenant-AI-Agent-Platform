@@ -70,6 +70,8 @@ class StepRunner:
         name: str,
         payload: Any,
         fn: Callable[[], Awaitable[StepOutcome]],
+        *,
+        store_input: bool = True,
     ) -> Any:
         if kind not in STEP_KINDS:
             raise ValueError(f"unknown step kind {kind!r}")
@@ -91,7 +93,7 @@ class StepRunner:
             return json.loads(row["output"]) if row["output"] is not None else None
 
         await self._check_budget(seq)
-        await self._start(seq, kind, name, digest, payload)
+        await self._start(seq, kind, name, digest, payload if store_input else None)
         try:
             outcome = await fn()
         except Exception as exc:

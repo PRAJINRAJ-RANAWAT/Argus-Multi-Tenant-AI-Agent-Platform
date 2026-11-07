@@ -8,6 +8,9 @@ repeatable. Faults are configurable at startup (env) and at runtime
 * ``error_rate_500`` / ``error_rate_429``: probability of an injected failure
 * ``retry_after_s``: ``Retry-After`` header on injected 429s
 * ``outage``: every request returns 500 (provider outage drill)
+* ``tool_script``: tool calls to make, one per turn, when the request offers tools.
+  Turn N (N = tool results so far) calls ``tool_script[N]``; afterwards it answers in
+  text. The default script reads the diff if a ``get_pr_diff`` tool is offered.
 """
 
 import asyncio
@@ -33,6 +36,7 @@ class Faults(BaseModel):
     retry_after_s: int = 1
     outage: bool = False
     seed: int | None = None
+    tool_script: list[dict[str, Any]] | None = None
 
 
 class MockSettings(BaseSettings):
@@ -55,6 +59,24 @@ def _text_of(message: dict[str, Any]) -> str:
     if isinstance(content, list):
         return " ".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
     return ""
+
+
+def next_tool_call(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]], script: list[dict[str, Any]] | None
+) -> dict[str, Any] | None:
+    """The scripted tool call for this turn, as an OpenAI ``tool_calls`` entry, or None."""
+    offered = [str((t.get("function") or {}).get("name")) for t in tools]
+    if script is None:
+        script = [{"name": "get_pr_diff", "arguments": {}}] if "get_pr_diff" in offered else []
+    turn = sum(1 for m in messages if m.get("role") == "tool")
+    if turn >= len(script):
+        return None
+    step = script[turn]
+    return {
+        "id": f"call_{turn}",
+        "type": "function",
+        "function": {"name": step["name"], "arguments": json.dumps(step.get("arguments", {}))},
+    }
 
 
 def canned_completion(messages: list[dict[str, Any]]) -> str:
@@ -135,6 +157,30 @@ def create_app(faults: Faults | None = None) -> FastAPI:
         await state.delay()
         if (err := state.injected_error()) is not None:
             return err
+        tools = body.get("tools") or []
+        call = next_tool_call(messages, tools, state.faults.tool_script) if tools else None
+        if call is not None and not body.get("stream"):
+            prompt_tokens = sum(estimate_tokens(_text_of(m)) for m in messages)
+            return JSONResponse(
+                {
+                    "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": None, "tool_calls": [call]},
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": 10,
+                        "total_tokens": prompt_tokens + 10,
+                    },
+                }
+            )
         text = canned_completion(messages)
         max_tokens = body.get("max_tokens")
         if isinstance(max_tokens, int) and max_tokens > 0:
