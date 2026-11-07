@@ -31,6 +31,8 @@ class Settings(BaseSettings):
 
     # Workers
     worker_id: str = ""
+    # Bearer token for /admin endpoints until M4 adds user auth. Empty = admin API off.
+    admin_token: SecretStr = SecretStr("")
     worker_concurrency: int = 20
 
     def github_private_key_pem(self) -> str:
