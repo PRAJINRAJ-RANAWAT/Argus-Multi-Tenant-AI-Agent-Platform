@@ -16,7 +16,7 @@ from typing import Any
 import asyncpg
 
 from argus.auth import audit
-from argus.llm.client import LLMClient
+from argus.llm.client import ChatModel
 from argus.steps import StepOutcome, StepRunner
 from argus.tools.hub import ToolDeniedError, ToolHub
 
@@ -51,7 +51,7 @@ def wrap_untrusted(source: str, text: str) -> str:
 
 async def run_tool_loop(
     steps: StepRunner,
-    llm: LLMClient,
+    llm: ChatModel,
     hub: ToolHub,
     messages: list[dict[str, Any]],
     *,

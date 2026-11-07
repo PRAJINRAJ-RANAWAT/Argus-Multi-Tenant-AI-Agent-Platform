@@ -172,15 +172,26 @@ class StreamQueue:
         res = await self._ack(keys=[self.stream], args=[self.group, msg.id, self.consumer])
         return bool(res)
 
-    async def retry(self, msg: Message, error: str) -> str:
+    async def retry(
+        self,
+        msg: Message,
+        error: str,
+        *,
+        min_delay_s: float | None = None,
+        count_attempt: bool = True,
+    ) -> str:
         """Schedule a retry with backoff, or dead-letter once attempts are exhausted.
 
+        ``min_delay_s`` honours a server's ``Retry-After``; ``count_attempt=False`` is for
+        waits that are not failures (rate limits), so they never dead-letter a message.
         Returns ``"retry"``, ``"dead"``, or ``"lost_ownership"``.
         """
-        next_attempt = msg.attempt + 1
+        next_attempt = msg.attempt + 1 if count_attempt else msg.attempt
         if next_attempt >= self.max_attempts:
             return await self.dead_letter(msg, error)
         delay = backoff_s(msg.attempt, base=self.backoff_base_s, cap=self.backoff_cap_s)
+        if min_delay_s is not None:
+            delay = max(delay, min_delay_s)
         due_ms = int((time.time() + delay) * 1000)
         member = json.dumps(
             {"data": msg.data, "attempt": next_attempt, "origin": msg.id, "error": error[:500]}

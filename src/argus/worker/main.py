@@ -4,6 +4,7 @@
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import os
 import signal
@@ -19,9 +20,11 @@ from argus.agents.qa import AGENT_TYPE as QA_AGENT
 from argus.agents.qa import QADeps, handle_qa_message
 from argus.config import Settings, get_settings
 from argus.db.pool import create_pool
+from argus.gateway.core import Gateway, GatewayConfig
+from argus.gateway.providers import AnthropicProvider, OpenAIProvider, Provider
+from argus.gateway.semcache import QACache
 from argus.github.auth import InstallationTokenProvider
 from argus.github.client import GitHubClient
-from argus.llm.client import LLMClient
 from argus.logging import configure_logging
 from argus.queue.consumer import run_consumer
 from argus.queue.streams import StreamQueue
@@ -52,6 +55,33 @@ async def reaper_loop(pool: asyncpg.Pool, stop: asyncio.Event, interval_s: float
             await asyncio.wait_for(stop.wait(), timeout=interval_s)
 
 
+def build_gateway(
+    settings: Settings, http: httpx.AsyncClient, redis: Redis, pool: asyncpg.Pool
+) -> Gateway:
+    providers: dict[str, Provider] = {
+        "openai": OpenAIProvider(
+            http, base_url=settings.llm_base_url, api_key=settings.llm_api_key.get_secret_value()
+        )
+    }
+    if settings.anthropic_base_url:
+        providers["anthropic"] = AnthropicProvider(
+            http,
+            base_url=settings.anthropic_base_url,
+            api_key=settings.anthropic_api_key.get_secret_value(),
+        )
+    routes = json.loads(settings.llm_routes)
+    missing = {m.split(":")[0] for chain in routes.values() for m in chain} - providers.keys()
+    if missing:
+        raise RuntimeError(f"routes use unconfigured providers: {sorted(missing)}")
+    config = GatewayConfig(
+        routes=routes,
+        tenant_tokens_per_min=settings.tenant_tokens_per_min,
+        provider_requests_per_min=settings.provider_requests_per_min,
+        total_timeout_s=settings.llm_timeout_s,
+    )
+    return Gateway(providers, redis, pool, config)
+
+
 def default_worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
@@ -72,12 +102,7 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
         deps = ReviewDeps(
             pool=pool,
             github=GitHubClient(http, tokens.get, settings.github_api_url),
-            llm=LLMClient(
-                http,
-                base_url=settings.llm_base_url,
-                api_key=settings.llm_api_key.get_secret_value(),
-                model=settings.llm_model,
-            ),
+            llm=build_gateway(settings, http, redis, pool),
             redis=redis,
             worker_id=worker_id,
         )
@@ -92,7 +117,12 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
         deps.embedder = embedder
         index_deps = IndexDeps(pool=pool, github=deps.github, embedder=embedder)
         qa_deps = QADeps(
-            pool=pool, github=deps.github, llm=deps.llm, embedder=embedder, worker_id=worker_id
+            pool=pool,
+            github=deps.github,
+            llm=deps.llm,
+            embedder=embedder,
+            worker_id=worker_id,
+            cache=QACache(pool, embedder, settings.qa_cache_threshold),
         )
 
         review_q = StreamQueue(redis, JOBS_REVIEW, REVIEW_GROUP, worker_id)

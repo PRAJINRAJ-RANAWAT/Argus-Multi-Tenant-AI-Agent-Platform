@@ -17,8 +17,10 @@ from typing import Any
 import asyncpg
 
 from argus.agents.toolloop import audit_hook, run_tool_loop, wrap_untrusted
+from argus.gateway import TenantBudgetExceededError
+from argus.gateway.semcache import QACache
 from argus.github.client import GitHubClient
-from argus.llm.client import LLMClient
+from argus.llm.client import ModelSource
 from argus.mcp_servers import RunContext
 from argus.mcp_servers.code import build_code_server
 from argus.queue.consumer import PermanentError
@@ -57,10 +59,11 @@ CITATION = re.compile(r"(?<![\w/.-])([\w./-]+\.\w+):(\d+)(?:-(\d+))?")
 class QADeps:
     pool: asyncpg.Pool
     github: GitHubClient
-    llm: LLMClient
+    llm: ModelSource
     embedder: Embedder
     worker_id: str
     lease_s: float = 30.0
+    cache: QACache | None = None
 
 
 class QAError(Exception):
@@ -75,6 +78,7 @@ async def create_qa_run(
     question: str,
     requested_by: str,
     idempotency_key: str | None = None,
+    role: str = "member",
 ) -> tuple[uuid.UUID, bool]:
     """Create the run and its queue message in the caller's transaction (a tenant-scoped
     one in the API, so row-level security applies). Returns (run_id, created)."""
@@ -94,7 +98,7 @@ async def create_qa_run(
         repo_id,
         AGENT_TYPE,
         key,
-        json.dumps({"question": question}),
+        json.dumps({"question": question, "role": role}),
         requested_by,
     )
     if run_id is None:
@@ -177,7 +181,22 @@ async def handle_qa_message(deps: QADeps, msg: Message) -> None:
     lease = await claim_run(deps.pool, run_id, deps.worker_id, deps.lease_s)
     if lease is None:
         return
-    question = str(json.loads(run["input"])["question"])
+    run_input = json.loads(run["input"])
+    question = str(run_input["question"])
+    role = str(run_input.get("role", "member"))
+    commit = run["last_commit"]
+    if deps.cache is not None and commit:
+        cached = await deps.cache.lookup(
+            tenant_id=run["tenant_id"],
+            repo_id=run["repo_id"],
+            commit=commit,
+            role=role,
+            question=question,
+        )
+        if cached is not None:
+            await finish_run(deps.pool, lease, "succeeded", result=cached)
+            log.info("qa answered from semantic cache", extra={"run_id": str(run_id)})
+            return
     ctx = RunContext(
         pool=deps.pool,
         github=deps.github,
@@ -197,7 +216,7 @@ async def handle_qa_message(deps: QADeps, msg: Message) -> None:
             async with ToolHub([build_code_server(ctx)], POLICIES[AGENT_TYPE]) as hub:
                 final = await run_tool_loop(
                     steps,
-                    deps.llm,
+                    deps.llm.for_run(run["tenant_id"], run_id, AGENT_TYPE),
                     hub,
                     build_messages(run["full_name"], question),
                     on_tool_decision=audit_hook(deps.pool, run["tenant_id"], AGENT_TYPE, run_id),
@@ -206,21 +225,27 @@ async def handle_qa_message(deps: QADeps, msg: Message) -> None:
             verified, unverified = await verify_citations(
                 deps.pool, run["repo_id"], run["full_name"], answer
             )
-            await finish_run(
-                deps.pool,
-                lease,
-                "succeeded",
-                result={
-                    "answer": answer,
-                    "citations": verified,
-                    "unverified_citations": unverified,
-                    "index_commit": run["last_commit"],
-                    "model": final.get("model"),
-                },
-            )
+            result = {
+                "answer": answer,
+                "citations": verified,
+                "unverified_citations": unverified,
+                "index_commit": commit,
+                "model": final.get("model"),
+            }
+            await finish_run(deps.pool, lease, "succeeded", result=result)
+            if deps.cache is not None and commit and answer and not unverified:
+                await deps.cache.store(
+                    tenant_id=run["tenant_id"],
+                    repo_id=run["repo_id"],
+                    commit=commit,
+                    role=role,
+                    question=question,
+                    result=result,
+                    run_id=run_id,
+                )
     except LeaseLostError:
         raise
-    except (BudgetExceededError, NonDeterminismError) as exc:
+    except (BudgetExceededError, NonDeterminismError, TenantBudgetExceededError) as exc:
         await finish_run(deps.pool, lease, "failed", error=str(exc))
     except Exception as exc:
         await release_run(deps.pool, lease, f"{type(exc).__name__}: {exc}")

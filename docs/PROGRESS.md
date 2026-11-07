@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**M4 · Tenancy and auth**: in review. Next: M5 · LLM gateway.
+**M5 · LLM gateway**: in review. Next: M6 · Guardrails and approvals.
 
 M1's live "done when" (install the App → a review appears) is still waiting on the VPS and GitHub App (blockers below).
 
@@ -77,9 +77,19 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - Agents audit every tool allow/deny with redacted arguments. `argus.redact` for secrets. ADR 0009.
 - Tests (152 total): **RLS shows each tenant only its rows in every table with no WHERE; no tenant → nothing; cross-tenant insert rejected; tenant setting doesn't leak; API key of A gets 404 for B's runs/repos and never sees B's answers or code**; login creates memberships from GitHub, tenant choice, access removed when GitHub access is lost; bad OAuth state and open redirects rejected; private repo hidden until the user's GitHub permission allows it (denial audited); role gates; key lifecycle (hash only, repo limits, revoke); last owner protected; audit append-only and tamper-evident; audit details redacted; run events only reach their tenant.
 
+### M4 · Tenancy and auth (merged, `v0.4.0`)
+
+### M5 · LLM gateway
+- `argus.gateway`: tier routes → model chains, per-tenant daily budgets (reserve/settle in Postgres, alert once at `alert_pct`), Redis Lua token buckets per tenant (tokens) and provider (requests), retries with full jitter honouring `Retry-After`, per-model circuit breaker (rolling window, cooldown, half-open probe) with fallback, total deadline, `llm_calls` accounting with cost.
+- Providers: OpenAI-compatible and Anthropic Messages adapters (prompt-cache markers, cached tokens); streaming passthrough with a time-to-first-token deadline.
+- Agents use `for_run(tenant, run, agent)`; step identity is the tier. Budget exhaustion fails the run; rate-limit waits re-queue without using attempts.
+- Q&A semantic cache (tenant + repo + commit + role scope). Mock LLM gains `/v1/messages` and per-model outages (`fail_models`).
+- API: `PUT /api/budget`, `GET /api/usage`. Migration 0008, ADR 0010.
+- Tests (168 total): **budget stops a PR review run (failed, not retried, no comment, budget released)**; **outage of the primary fails over to the fallback, breaker opens after 3 failures and skips the dead model, then a probe closes it after recovery**; total outage is retryable and releases the reservation; `Retry-After` honoured and attempts bounded; 4xx not retried; tenant token bucket limits only that tenant; rate-limited messages retry without using attempts; 20 concurrent calls never overspend; alert fires once; Anthropic conversion and tool round trip; streaming and TTFT timeout; every call accounted with cost; semantic cache scoping and reuse.
+
 ## Next
 
-- **M5 · LLM gateway:** provider adapters (OpenAI-compatible + Anthropic) with streaming, model routing with logged routes, prompt-cache-friendly ordering, Q&A semantic cache keyed by tenant+repo+commit+role, Redis token-bucket limits (Lua) per tenant and provider, per-tenant daily budgets (check before, reconcile after, alert at 80%), retries with backoff honouring Retry-After, per-model circuit breaker with fallback, separate timeouts, per-call accounting. Done when a per-tenant budget stops runs and a provider outage fails over cleanly.
+- **M6 · Guardrails and approvals:** injection classifier on untrusted input (flagged runs get a reduced tool set and a warning), secret and PII output scanning before anything is posted (redact/block), egress allowlist for tools, approval flow for write actions (`waiting_approval`, dashboard/Slack decision re-enqueues the run), injection test set with attack success rate.
 
 ## Blockers waiting on the owner
 
