@@ -23,6 +23,12 @@ class FakeGitHub:
     token_ttl: timedelta = timedelta(hours=1)
     fail_next_comment_after_create: bool = False
     calls: list[str] = field(default_factory=list)
+    files: dict[str, str] = field(
+        default_factory=lambda: {"app.py": "def retry():\n    return 3\n"}
+    )
+    ci_state: str = "success"
+    issues: list[dict[str, Any]] = field(default_factory=list)
+    fail_diff_with: int | None = None  # HTTP status to return for the next diff fetch
     _ids: Iterator[int] = field(default_factory=lambda: itertools.count(1000))
 
     def transport(self) -> httpx.MockTransport:
@@ -48,7 +54,25 @@ class FakeGitHub:
         auth = request.headers.get("authorization", "")
         if not auth.startswith("Bearer ghs_fake_"):
             return httpx.Response(401, json={"message": "Bad credentials"})
+        if m := re.fullmatch(r"/repos/([^/]+/[^/]+)/contents/(.+)", path):
+            content = self.files.get(m.group(2))
+            if content is None:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, text=content)
+        if re.fullmatch(r"/repos/([^/]+/[^/]+)/pulls/(\d+)/files", path):
+            return httpx.Response(
+                200, json=[{"filename": f, "status": "modified"} for f in self.files]
+            )
+        if re.fullmatch(r"/repos/([^/]+/[^/]+)/commits/([^/]+)/status", path):
+            return httpx.Response(200, json={"state": self.ci_state, "statuses": []})
+        if re.fullmatch(r"/repos/([^/]+/[^/]+)/issues", path) and request.method == "POST":
+            issue = {"id": next(self._ids), **json.loads(request.content)}
+            self.issues.append(issue)
+            return httpx.Response(201, json=issue)
         if m := re.fullmatch(r"/repos/([^/]+/[^/]+)/pulls/(\d+)", path):
+            if "diff" in request.headers.get("accept", "") and self.fail_diff_with:
+                status, self.fail_diff_with = self.fail_diff_with, None
+                return httpx.Response(status, json={"message": "injected"})
             if "diff" in request.headers.get("accept", ""):
                 return httpx.Response(200, text=self.diff)
             return httpx.Response(200, json={"number": int(m.group(2))})

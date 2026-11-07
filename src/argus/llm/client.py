@@ -4,6 +4,7 @@ Interim client for M1: one call, no retries or routing (the queue retries the
 whole job with backoff). M5 replaces direct use with the LLM gateway.
 """
 
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -23,12 +24,40 @@ class LLMError(Exception):
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "name": self.name, "arguments": self.arguments}
+
+
+@dataclass(frozen=True)
 class ChatResult:
     content: str
     model: str
     input_tokens: int
     output_tokens: int
     latency_ms: float
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
+def _parse_tool_calls(message: dict[str, Any]) -> tuple[ToolCall, ...]:
+    out: list[ToolCall] = []
+    for i, tc in enumerate(message.get("tool_calls") or []):
+        fn = tc.get("function") or {}
+        raw = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else dict(raw)
+            if not isinstance(args, dict):
+                args = {"_value": args}
+        except (ValueError, TypeError):
+            args = {"_unparsed": str(raw)[:2000]}
+        out.append(
+            ToolCall(id=str(tc.get("id") or f"call_{i}"), name=str(fn.get("name")), arguments=args)
+        )
+    return tuple(out)
 
 
 class LLMClient:
@@ -52,6 +81,7 @@ class LLMClient:
         max_tokens: int = 1024,
         temperature: float = 0.2,
         model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ChatResult:
         started = time.perf_counter()
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -63,6 +93,7 @@ class LLMClient:
                     "messages": messages,
                     "max_tokens": max_tokens,
                     "temperature": temperature,
+                    **({"tools": tools} if tools else {}),
                 },
                 headers=headers,
             )
@@ -79,8 +110,10 @@ class LLMClient:
             )
         body = resp.json()
         usage = body.get("usage") or {}
+        message = body["choices"][0]["message"]
         return ChatResult(
-            content=body["choices"][0]["message"]["content"] or "",
+            content=message.get("content") or "",
+            tool_calls=_parse_tool_calls(message),
             model=body.get("model", model or self.model),
             input_tokens=int(usage.get("prompt_tokens", 0)),
             output_tokens=int(usage.get("completion_tokens", 0)),

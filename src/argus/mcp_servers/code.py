@@ -1,0 +1,59 @@
+"""``argus-code``: read-only tools over the PR's code.
+
+``search_code`` and ``find_callers`` arrive with code RAG in M3.
+"""
+
+import posixpath
+from typing import Any
+
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
+
+from argus.mcp_servers import RunContext
+
+READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+
+
+def safe_path(path: str) -> str:
+    """Normalise a repo-relative path; reject absolute paths and traversal."""
+    if not path or len(path) > 500 or "\x00" in path:
+        raise ToolError("invalid path")
+    norm = posixpath.normpath(path.strip().lstrip("/"))
+    if norm.startswith("..") or norm == ".":
+        raise ToolError("path must stay inside the repository")
+    return norm
+
+
+def build_code_server(ctx: RunContext) -> MCPServer:
+    server = MCPServer(
+        "argus-code",
+        instructions=f"Read-only access to {ctx.repo} at {ctx.head_sha[:12]}.",
+    )
+
+    @server.tool(annotations=READ)
+    async def get_pr_diff() -> str:
+        """Unified diff of the pull request under review (may be truncated)."""
+        diff = await ctx.github.get_pr_diff(ctx.installation_id, ctx.repo, ctx.pr_number)
+        if len(diff) > ctx.max_diff_chars:
+            return diff[: ctx.max_diff_chars] + "\n[diff truncated]"
+        return diff
+
+    @server.tool(annotations=READ)
+    async def list_changed_files() -> list[dict[str, Any]]:
+        """Files changed by the pull request, with their change status."""
+        files = await ctx.github.list_pr_files(ctx.installation_id, ctx.repo, ctx.pr_number)
+        return [{"path": f.get("filename"), "status": f.get("status")} for f in files]
+
+    @server.tool(annotations=READ)
+    async def read_file(path: str) -> str:
+        """Contents of a file in the repository at the PR's head commit."""
+        clean = safe_path(path)
+        content = await ctx.github.get_file(ctx.installation_id, ctx.repo, clean, ctx.head_sha)
+        if content is None:
+            raise ToolError(f"file not found: {clean}")
+        if len(content) > ctx.max_file_chars:
+            return content[: ctx.max_file_chars] + "\n[file truncated]"
+        return content
+
+    return server

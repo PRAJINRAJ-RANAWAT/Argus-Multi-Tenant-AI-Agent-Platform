@@ -326,15 +326,16 @@ async def test_kill_after_llm_step_resumes_without_recalling_llm_or_duplicating(
     assert await env.drain("live") == ["acked"]
 
     assert len(env.comments()) == 1
-    steps = await env.pool.fetch("SELECT seq, kind, status, attempts FROM run_steps ORDER BY seq")
-    assert [(s["kind"], s["status"], s["attempts"]) for s in steps] == [
-        ("tool_call", "done", 1),  # diff: replayed, not refetched
-        ("llm_call", "done", 1),  # LLM: replayed, not re-billed
-        ("tool_call", "done", 2),  # comment step re-run, guarded by the ledger
+    steps = await env.pool.fetch("SELECT kind, name, status, attempts FROM run_steps ORDER BY seq")
+    assert [(s["kind"], s["name"], s["status"], s["attempts"]) for s in steps] == [
+        ("llm_call", "mock-large", "done", 1),  # LLM asks for the diff: replayed
+        ("tool_call", "get_pr_diff", "done", 1),  # diff: replayed, not refetched
+        ("llm_call", "mock-large", "done", 1),  # final review: replayed, not re-billed
+        ("tool_call", "post_review_comment", "done", 2),  # re-run, guarded by the ledger
     ]
     run = await env.pool.fetchrow("SELECT status, result FROM runs")
     assert run["status"] == "succeeded"
-    assert json.loads(run["result"])["steps_replayed"] == 2
+    assert json.loads(run["result"])["steps_replayed"] == 3
 
 
 async def test_new_push_supersedes_running_review(env: Env) -> None:
@@ -397,4 +398,130 @@ async def test_step_budget_fails_run_without_retry_or_comment(env: Env) -> None:
     run = await env.pool.fetchrow("SELECT status, error FROM runs")
     assert run["status"] == "failed"
     assert "max_steps" in run["error"]
+    assert env.comments() == []
+
+
+# --- M2b: tool-calling loop over MCP ---------------------------------------------------
+
+
+def _script(env: Env, *calls: tuple[str, dict[str, object]]) -> None:
+    env.llm_app_faults.faults.tool_script = [  # type: ignore[attr-defined]
+        {"name": n, "arguments": a} for n, a in calls
+    ]
+
+
+async def _tool_steps(env: Env) -> list[tuple[str, dict[str, Any]]]:
+    rows = await env.pool.fetch(
+        "SELECT name, output FROM run_steps WHERE kind = 'tool_call' ORDER BY seq"
+    )
+    return [(r["name"], json.loads(r["output"])) for r in rows]
+
+
+async def test_model_drives_multiple_read_tools(env: Env) -> None:
+    _script(
+        env,
+        ("list_changed_files", {}),
+        ("read_file", {"path": "app.py"}),
+        ("get_ci_status", {}),
+        ("get_pr_diff", {}),
+    )
+    await env.deliver(pr_payload())
+    assert await env.drain() == ["acked"]
+    steps = await _tool_steps(env)
+    assert [n for n, _ in steps] == [
+        "list_changed_files",
+        "read_file",
+        "get_ci_status",
+        "get_pr_diff",
+        "post_review_comment",
+    ]
+    assert "def retry" in steps[1][1]["text"]
+    assert '"success"' in steps[2][1]["text"]
+    assert len(env.comments()) == 1
+
+
+async def test_tools_outside_the_allowlist_are_denied_and_audited(env: Env) -> None:
+    _script(
+        env,
+        ("open_issue", {"title": "pwned", "body": "x", "idempotency_key": "k"}),
+        ("post_review_comment", {"body": "spam", "idempotency_key": "k2"}),
+        ("delete_repo", {}),
+    )
+    await env.deliver(pr_payload())
+    assert await env.drain() == ["acked"]
+    steps = await _tool_steps(env)
+    assert [(n, o.get("denied")) for n, o in steps[:3]] == [
+        ("open_issue", True),
+        ("post_review_comment", True),
+        ("delete_repo", True),
+    ]
+    assert env.gh.issues == []
+    [comment] = env.comments()  # only the runtime's own review comment
+    assert "spam" not in comment["body"]
+
+
+async def test_path_traversal_and_missing_files_are_tool_errors(env: Env) -> None:
+    _script(
+        env,
+        ("read_file", {"path": "../../etc/passwd"}),
+        ("read_file", {"path": "nope.py"}),
+    )
+    await env.deliver(pr_payload())
+    assert await env.drain() == ["acked"]
+    steps = await _tool_steps(env)
+    assert steps[0][1]["is_error"] and "inside the repository" in steps[0][1]["text"]
+    assert steps[1][1]["is_error"] and "file not found" in steps[1][1]["text"]
+    assert not any("/etc/passwd" in c for c in env.gh.calls)
+
+
+async def test_tool_crash_is_retried_not_shown_to_model(env: Env) -> None:
+    env.gh.fail_diff_with = 502
+    await env.deliver(pr_payload())
+    assert await env.drain() == ["retry", "acked"]
+    row = await env.pool.fetchrow(
+        "SELECT status, attempts FROM run_steps WHERE name = 'get_pr_diff'"
+    )
+    assert row is not None and (row["status"], row["attempts"]) == ("done", 2)
+    [(_, diff_out), _] = await _tool_steps(env)
+    assert "def retry" in diff_out["text"]
+    assert len(env.comments()) == 1
+
+
+async def test_model_never_sees_write_tools_or_runtime_args(env: Env) -> None:
+    from argus.mcp_servers import RunContext
+    from argus.mcp_servers.code import build_code_server
+    from argus.mcp_servers.github import build_github_server
+    from argus.tools.hub import POLICIES, AgentToolPolicy, ToolDeniedError, ToolHub
+
+    ctx = RunContext(
+        pool=env.pool,
+        github=env.deps.github,
+        tenant_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        lease_version=1,
+        installation_id=1001,
+        repo=REPO,
+        pr_number=7,
+        head_sha=SHA_A,
+    )
+    servers = [build_code_server(ctx), build_github_server(ctx)]
+    async with ToolHub(servers, POLICIES["pr_review"]) as hub:
+        names = {s["function"]["name"] for s in hub.model_specs()}
+        assert names == {"get_pr_diff", "list_changed_files", "read_file", "get_ci_status"}
+        with pytest.raises(ToolDeniedError):
+            await hub.call("post_review_comment", {"body": "x"}, by_model=True)
+        with pytest.raises(ToolDeniedError):
+            await hub.call("open_issue", {"title": "t", "body": "b"}, by_model=False)
+
+    writer = AgentToolPolicy(model_tools=frozenset({"post_review_comment"}))
+    async with ToolHub([build_github_server(ctx)], writer) as hub:
+        [spec] = hub.model_specs()
+        params = spec["function"]["parameters"]
+        assert "idempotency_key" not in params["properties"]
+        assert "idempotency_key" not in params.get("required", [])
+        # A model-supplied key is stripped, so the call fails validation server-side.
+        out = await hub.call(
+            "post_review_comment", {"body": "x", "idempotency_key": "evil"}, by_model=True
+        )
+        assert out.is_error
     assert env.comments() == []
