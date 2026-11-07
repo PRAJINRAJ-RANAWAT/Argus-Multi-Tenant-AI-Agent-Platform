@@ -1,0 +1,14 @@
+{"id": "q-retry", "question": "How do we retry failed calls with exponential backoff?", "expected_files": ["app/retry.py"]}
+{"id": "q-charge", "question": "Where do we charge a customer through the payment gateway?", "expected_files": ["app/billing.py"]}
+{"id": "q-prorate", "question": "How is proration of a subscription computed?", "expected_files": ["app/billing.py"]}
+{"id": "q-signature", "question": "How are webhook signatures verified?", "expected_files": ["app/auth.py"]}
+{"id": "q-password", "question": "How do we hash passwords?", "expected_files": ["app/auth.py"]}
+{"id": "q-ratelimit", "question": "Where is the token bucket rate limiter?", "expected_files": ["app/rate_limit.py"]}
+{"id": "q-lru", "question": "Which cache evicts the least recently used item?", "expected_files": ["app/cache.py"]}
+{"id": "q-welcome", "question": "What sends the welcome email after signup?", "expected_files": ["app/email.py"]}
+{"id": "q-search", "question": "How does document search order its results?", "expected_files": ["app/search.py"]}
+{"id": "q-csv", "question": "How do we export invoices as CSV?", "expected_files": ["app/export.py"]}
+{"id": "q-scheduler", "question": "How are scheduled jobs run in order of due time?", "expected_files": ["app/scheduler.py"]}
+{"id": "q-deploy", "question": "How do I deploy to production?", "expected_files": ["docs/deploy.md"]}
+{"id": "q-unsubscribe", "question": "Where do users unsubscribe from emails?", "expected_files": ["app/email.py"]}
+{"id": "q-callers", "question": "What calls retry_with_backoff?", "expected_files": ["app/billing.py", "app/retry.py"]}

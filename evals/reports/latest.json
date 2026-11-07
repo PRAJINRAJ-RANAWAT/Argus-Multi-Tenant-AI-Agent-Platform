@@ -1,0 +1,441 @@
+{
+  "started_at": "2026-11-07T07:14:41.943755+00:00",
+  "prompt_version": "30503d4df5d3",
+  "metrics": {
+    "review.recall": 1.0,
+    "review.precision": 1.0,
+    "review.line_accuracy": 1.0,
+    "review.judge_mean": 5.0,
+    "qa.retrieval_recall_at_5": 0.9286,
+    "qa.citation_accuracy": 0.9286,
+    "safety.attack_success_rate": 0.0345,
+    "judge.agreement": 1.0
+  },
+  "review_cases": [
+    {
+      "id": "sql-user-lookup",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "SQL injection app/users.py:6"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "sql-format-report",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "SQL injection app/reports.py:3"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "secret-in-config",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Hardcoded secret app/payments.py:3"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "secret-db-password",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Hardcoded secret app/settings.py:2"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "cmd-injection-archive",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Command injection app/archive.py:4"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "pickle-session",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Unsafe deserialization app/session.py:4"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "yaml-config",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Unsafe deserialization app/config_loader.py:5"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "off-by-one-pages",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Off-by-one error app/paginate.py:3"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "off-by-one-bounds",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Off-by-one error app/buffer.py:2"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "none-check-user",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Missing None check app/profile.py:3"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "none-check-config",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Missing None check app/flags.py:3"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "swallowed-exception",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Swallowed exception app/notify.py:4"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "mutable-default",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Mutable default argument app/tags.py:1"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "missing-tests-billing",
+      "expected": 1,
+      "found": 1,
+      "matched": 1,
+      "line_ok": 1,
+      "findings": [
+        "Missing tests app/billing.py:1"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "two-bugs",
+      "expected": 2,
+      "found": 2,
+      "matched": 2,
+      "line_ok": 2,
+      "findings": [
+        "SQL injection app/search.py:2",
+        "Off-by-one error app/search.py:4"
+      ],
+      "judge_score": 5
+    },
+    {
+      "id": "clean-retry",
+      "expected": 0,
+      "found": 0,
+      "matched": 0,
+      "line_ok": 0,
+      "findings": [],
+      "judge_score": 5
+    },
+    {
+      "id": "clean-query",
+      "expected": 0,
+      "found": 0,
+      "matched": 0,
+      "line_ok": 0,
+      "findings": [],
+      "judge_score": 5
+    },
+    {
+      "id": "clean-none",
+      "expected": 0,
+      "found": 0,
+      "matched": 0,
+      "line_ok": 0,
+      "findings": [],
+      "judge_score": 5
+    },
+    {
+      "id": "clean-env-secret",
+      "expected": 0,
+      "found": 0,
+      "matched": 0,
+      "line_ok": 0,
+      "findings": [],
+      "judge_score": 5
+    },
+    {
+      "id": "clean-docs",
+      "expected": 0,
+      "found": 0,
+      "matched": 0,
+      "line_ok": 0,
+      "findings": [],
+      "judge_score": 5
+    }
+  ],
+  "qa_cases": [
+    {
+      "id": "q-retry",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/retry.py",
+        "app/retry.py",
+        "app/billing.py",
+        "app/billing.py",
+        "app/auth.py"
+      ],
+      "cited": [
+        "app/retry.py"
+      ]
+    },
+    {
+      "id": "q-charge",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/billing.py",
+        "app/export.py",
+        "app/email.py",
+        "docs/deploy.md",
+        "app/scheduler.py"
+      ],
+      "cited": [
+        "app/billing.py"
+      ]
+    },
+    {
+      "id": "q-prorate",
+      "retrieval_hit": false,
+      "citation_hit": true,
+      "retrieved": [
+        "app/email.py",
+        "app/scheduler.py",
+        "app/cache.py",
+        "app/cache.py",
+        "app/search.py"
+      ],
+      "cited": [
+        "app/billing.py"
+      ]
+    },
+    {
+      "id": "q-signature",
+      "retrieval_hit": true,
+      "citation_hit": false,
+      "retrieved": [
+        "app/auth.py",
+        "docs/deploy.md",
+        "app/scheduler.py",
+        "app/scheduler.py",
+        "app/retry.py"
+      ],
+      "cited": [
+        "app/billing.py"
+      ]
+    },
+    {
+      "id": "q-password",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/auth.py",
+        "app/scheduler.py",
+        "app/scheduler.py",
+        "app/scheduler.py",
+        "app/scheduler.py"
+      ],
+      "cited": [
+        "app/auth.py"
+      ]
+    },
+    {
+      "id": "q-ratelimit",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/rate_limit.py",
+        "app/rate_limit.py",
+        "app/rate_limit.py",
+        "app/rate_limit.py",
+        "app/email.py"
+      ],
+      "cited": [
+        "app/rate_limit.py"
+      ]
+    },
+    {
+      "id": "q-lru",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/cache.py",
+        "app/cache.py",
+        "app/cache.py",
+        "app/cache.py",
+        "app/billing.py"
+      ],
+      "cited": [
+        "app/cache.py"
+      ]
+    },
+    {
+      "id": "q-welcome",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/email.py",
+        "app/email.py",
+        "docs/deploy.md",
+        "app/scheduler.py",
+        "app/cache.py"
+      ],
+      "cited": [
+        "app/email.py"
+      ]
+    },
+    {
+      "id": "q-search",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/search.py",
+        "app/scheduler.py",
+        "app/billing.py",
+        "app/auth.py",
+        "app/auth.py"
+      ],
+      "cited": [
+        "app/search.py"
+      ]
+    },
+    {
+      "id": "q-csv",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/export.py",
+        "app/export.py",
+        "app/email.py",
+        "app/scheduler.py",
+        "app/scheduler.py"
+      ],
+      "cited": [
+        "app/export.py"
+      ]
+    },
+    {
+      "id": "q-scheduler",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/scheduler.py",
+        "app/scheduler.py",
+        "app/rate_limit.py",
+        "app/scheduler.py",
+        "app/retry.py"
+      ],
+      "cited": [
+        "app/scheduler.py"
+      ]
+    },
+    {
+      "id": "q-deploy",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "docs/deploy.md",
+        "app/billing.py",
+        "app/cache.py",
+        "app/email.py",
+        "app/export.py"
+      ],
+      "cited": [
+        "docs/deploy.md"
+      ]
+    },
+    {
+      "id": "q-unsubscribe",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/email.py",
+        "docs/deploy.md",
+        "app/billing.py",
+        "app/cache.py",
+        "app/email.py"
+      ],
+      "cited": [
+        "app/email.py"
+      ]
+    },
+    {
+      "id": "q-callers",
+      "retrieval_hit": true,
+      "citation_hit": true,
+      "retrieved": [
+        "app/retry.py",
+        "app/billing.py",
+        "app/billing.py",
+        "app/retry.py",
+        "app/auth.py"
+      ],
+      "cited": [
+        "app/retry.py"
+      ]
+    }
+  ],
+  "judge_agreement": 1.0,
+  "failures": []
+}

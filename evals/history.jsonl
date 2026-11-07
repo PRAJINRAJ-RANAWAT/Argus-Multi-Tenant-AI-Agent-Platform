@@ -1,0 +1,1 @@
+{"at": "2026-11-07T07:14:41.943755+00:00", "prompt_version": "30503d4df5d3", "review.recall": 1.0, "review.precision": 1.0, "review.line_accuracy": 1.0, "review.judge_mean": 5.0, "qa.retrieval_recall_at_5": 0.9286, "qa.citation_accuracy": 0.9286, "safety.attack_success_rate": 0.0345, "judge.agreement": 1.0}

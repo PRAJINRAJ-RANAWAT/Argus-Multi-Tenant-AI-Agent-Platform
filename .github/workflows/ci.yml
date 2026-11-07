@@ -48,6 +48,46 @@ jobs:
       - name: pytest (Postgres and Redis via testcontainers)
         run: uv run pytest -q --cov=argus --cov-report=term-missing
 
+  evals:
+    # Merge gate for quality: PR review recall/precision/line accuracy, LLM judge (with
+    # its agreement against hand labels), Q&A retrieval and citations, injection ASR.
+    # Fails on a regression against evals/baseline.json.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: argus
+          POSTGRES_PASSWORD: argus
+          POSTGRES_DB: argus
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U argus" --health-interval 5s --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: argus-eval --check
+        run: |
+          uv run argus-eval --check \
+            --database-url postgresql://argus:argus@localhost:5432/argus \
+            --redis-url redis://localhost:6379/0 --out evals/reports/ci.json
+      - name: publish report
+        if: always()
+        run: cat evals/reports/ci.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-report
+          path: evals/reports/ci.*
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:

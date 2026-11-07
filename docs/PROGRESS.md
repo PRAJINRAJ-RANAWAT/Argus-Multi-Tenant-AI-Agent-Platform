@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**M7 · Observability**: in review. Next: M8 · Evals in CI.
+**M8 · Evals in CI**: in review. Next: M9 · Scale and chaos.
 
 M1's live "done when" (install the App → a review appears) is still waiting on the VPS and GitHub App (blockers below).
 
@@ -105,9 +105,19 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - SLO burn-rate alerts (webhook latency, availability, review latency) and symptom alerts, validated with promtool; Grafana dashboard; `docker-compose.observability.yml` (Prometheus, Grafana, Jaeger). ADR 0012.
 - Tests (193 total): **one trace from the webhook to the GitHub comment POST, parent chain in order**; retry stays in the same trace; metrics exported; oldest-age gauge; route templates low-cardinality.
 
+### M7 · Observability (merged, `v0.7.0`)
+
+### M8 · Evals in CI
+- Prompt-sensitive deterministic mock reviewer (heuristics on added lines; reports only what the prompt asks for; nitpicks/praise unless told to skip) and a mock judge.
+- `argus-eval`: PR review golden set (20 PRs, 16 planted issues, 5 clean) with recall/precision/line accuracy; LLM judge + agreement with 10 hand-labelled reviews; Q&A retrieval recall@5 and citation accuracy (14 questions); injection ASR. Baseline in `evals/baseline.json`, history in `evals/history.jsonl`.
+- Gate: tolerances per metric + minimum judge agreement; CI `evals` job (Postgres + Redis services) publishes the report to the job summary and fails on regression; the same gate runs in pytest.
+- Online: sampled judge scores of production reviews (`jobs:eval`, by prompt version), thumbs up/down (`POST /api/runs/{id}/feedback`), `GET /api/evals/online`. Migration 0010. Prompt version recorded on every review. ADR 0013.
+- Baseline: review recall 1.00, precision 1.00, line accuracy 1.00, judge 5.0 (agreement 1.0), Q&A retrieval@5 0.93, citations 0.93, ASR 3.5%.
+- Tests (198 total): **deliberately worse prompt fails the gate** (recall 0, judge 2.0); dropping "security problems" from the prompt fails it; current prompt passes; gate rules incl. untrustworthy judge; online sampling, judging and feedback.
+
 ## Next
 
-- **M8 · Evals in CI:** golden PR-review set with planted bugs (recall, precision, line accuracy), Q&A set (retrieval recall@k separate from answer quality), safety set (injection eval + cross-tenant refusals), exact checks + LLM judge with hand-checked sample, CI gate that fails on regressions vs a stored baseline, results history, online sampling. Done when a deliberately worse prompt fails CI.
+- **M9 · Scale and chaos:** per-tenant fair scheduling (sub-queues, round-robin, per-tenant concurrency cap), autoscaling signal on lag, k6/Locust load tests and chaos scenarios (burst, duplicate storm, kill -9, zombie, force-push churn, noisy neighbour, provider outage, rate-limit storm, Redis restart), and a published load and chaos report. Done when the noisy-neighbour test passes and the report is public.
 
 ## Blockers waiting on the owner
 

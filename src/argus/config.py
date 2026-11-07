@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     tenant_tokens_per_min: int = 400_000
     provider_requests_per_min: int = 600
     qa_cache_threshold: float = 0.95
+    online_eval_rate: float = 0.05  # share of successful reviews scored by the LLM judge
     # Embeddings (OpenAI-compatible /embeddings; defaults to the mock LLM server).
     embed_base_url: str = ""  # empty = llm_base_url
     embed_api_key: SecretStr = SecretStr("")

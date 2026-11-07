@@ -7,6 +7,7 @@ and a hidden marker), checking between steps whether a newer push superseded the
 fenced completion.
 """
 
+import hashlib
 import json
 import logging
 import time
@@ -21,6 +22,7 @@ from redis.asyncio import Redis
 from argus.agents.toolloop import audit_hook, run_tool_loop
 from argus.approvals import WaitingForApprovalError, approval_gate, park_run, required_tools
 from argus.auth import audit
+from argus.evals.online import maybe_sample
 from argus.gateway import TenantBudgetExceededError
 from argus.github.client import GitHubClient
 from argus.guardrails.injection import Verdict, neutralise_wrapper
@@ -79,6 +81,8 @@ class ReviewDeps:
     worker_id: str
     lease_s: float = 30.0  # short: LeaseKeeper renews it every lease_s / 3
     embedder: Embedder | None = None  # enables search_code over the repo's index
+    system_prompt: str = ""  # empty = SYSTEM_PROMPT; evals override it to test prompt changes
+    online_eval_rate: float = 0.0  # share of successful reviews scored by the judge
     max_diff_chars: int = 60_000
     side_effect_stale_s: float = 120.0
 
@@ -119,7 +123,11 @@ def review_key(pr: PullRequestRef) -> str:
     return f"review:{pr.github_repo_id}:{pr.number}:{pr.head_sha}"
 
 
-def build_messages(pr: PullRequestRef) -> list[dict[str, Any]]:
+def prompt_version(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode()).hexdigest()[:12]
+
+
+def build_messages(pr: PullRequestRef, system_prompt: str = "") -> list[dict[str, Any]]:
     user = (
         f"Review pull request #{pr.number} in {pr.repo_full_name} at {pr.head_sha[:12]}.\n\n"
         "<untrusted_data>\n"
@@ -127,7 +135,10 @@ def build_messages(pr: PullRequestRef) -> list[dict[str, Any]]:
         f"<pr_description>{neutralise_wrapper(pr.body)}</pr_description>\n"
         "</untrusted_data>"
     )
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+    return [
+        {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
 
 
 def render_comment(review: str, pr: PullRequestRef) -> str:
@@ -318,7 +329,7 @@ async def _review(
             steps,
             deps.llm.for_run(tenant_id, run_id, AGENT_TYPE),
             hub,
-            build_messages(pr),
+            build_messages(pr, deps.system_prompt),
             between_steps=check_superseded,
             on_tool_decision=audit_hook(deps.pool, tenant_id, AGENT_TYPE, run_id),
             on_tool_result=lambda tool, text: guard.inspect(f"tool:{tool}", text),
@@ -394,6 +405,8 @@ async def _review(
             "comment_id": comment["comment_id"],
             "model": final.get("model"),
             "comment_reused": comment["reused"],
+            "prompt_version": prompt_version(deps.system_prompt or SYSTEM_PROMPT),
+            "review": body[:4000],
             "steps_replayed": steps.replayed,
             "steps": steps.seq,
             "guardrails": {
@@ -402,6 +415,14 @@ async def _review(
                 "echoes_removed": echoes,
             },
         },
+    )
+    await maybe_sample(
+        deps.pool,
+        run_id=run_id,
+        tenant_id=tenant_id,
+        agent=AGENT_TYPE,
+        prompt_version=prompt_version(deps.system_prompt or SYSTEM_PROMPT),
+        rate=deps.online_eval_rate,
     )
     return "succeeded"
 

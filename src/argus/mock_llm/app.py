@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from argus.mock_llm.reviewer import review
 from argus.rag.embed import hashing_vector
 
 
@@ -142,10 +143,37 @@ def canned_completion(messages: list[dict[str, Any]], obey: bool = False) -> str
     return text
 
 
+def _judge(messages: list[dict[str, Any]]) -> str:
+    """Deterministic judge: score a review against the expected issue titles."""
+    text = " ".join(_text_of(m) for m in messages if m.get("role") == "user")
+    m = re.search(r"<judge_input>(.*)</judge_input>", text, re.S)
+    data = json.loads(m.group(1)) if m else {}
+    expected = [str(e).lower() for e in data.get("expected", [])]
+    review_text = str(data.get("review", "")).lower()
+    nitpicks = review_text.count("nitpick")
+    if not expected:
+        score = 5 if "no issues found" in review_text else max(1, 4 - nitpicks)
+    else:
+        hit = sum(1 for e in expected if e in review_text)
+        score = round(1 + 4 * hit / len(expected)) - min(2, nitpicks // 2)
+    score = max(1, min(5, score))
+    return json.dumps({"score": score, "reason": f"{nitpicks} nitpicks"})
+
+
 def _canned(messages: list[dict[str, Any]]) -> str:
-    system = " ".join(_text_of(m) for m in messages if m.get("role") == "system").lower()
+    raw_system = " ".join(_text_of(m) for m in messages if m.get("role") == "system")
+    system = raw_system.lower()
     last = _text_of(messages[-1]) if messages else ""
     digest = hashlib.sha256(last.encode()).hexdigest()[:8]
+    if "evaluation judge" in system:
+        return _judge(messages)
+    diffs = [
+        _text_of(m)
+        for m in messages
+        if m.get("role") == "tool" and ("diff --git" in _text_of(m) or "\n+++ " in _text_of(m))
+    ]
+    if "review" in system and diffs:
+        return review(raw_system, "\n".join(diffs))
     if "review" in system:
         return (
             "### Summary\n"
