@@ -52,6 +52,22 @@ class Settings(BaseSettings):
     embed_api_key: SecretStr = SecretStr("")
     embed_model: str = "mock-embed"
 
+    # Guardrails: extra hosts agents' HTTP clients may reach (comma-separated; the
+    # GitHub, LLM and embedding hosts above are always allowed).
+    egress_extra_hosts: str = ""
+
+    def egress_hosts(self) -> set[str]:
+        from argus.guardrails.egress import hosts_from_urls
+
+        extra = {h.strip() for h in self.egress_extra_hosts.split(",") if h.strip()}
+        return extra | hosts_from_urls(
+            self.github_api_url,
+            self.github_web_url,
+            self.llm_base_url,
+            self.embed_base_url,
+            self.anthropic_base_url,
+        )
+
     # Workers
     worker_id: str = ""
     # Bearer token for operator endpoints (/admin: DLQ). Empty = admin API off.

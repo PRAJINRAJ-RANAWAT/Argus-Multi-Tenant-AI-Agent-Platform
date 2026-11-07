@@ -26,6 +26,7 @@ dependencies = [
 argus-migrate = "argus.db.migrate:main"
 argus-worker = "argus.worker.main:main"
 argus-relay = "argus.queue.relay:main"
+argus-eval-injection = "argus.evals.injection:main"
 
 [dependency-groups]
 dev = [

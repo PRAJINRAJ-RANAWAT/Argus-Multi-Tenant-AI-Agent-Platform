@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**M5 · LLM gateway**: in review. Next: M6 · Guardrails and approvals.
+**M6 · Guardrails and approvals**: in review. Next: M7 · Observability.
 
 M1's live "done when" (install the App → a review appears) is still waiting on the VPS and GitHub App (blockers below).
 
@@ -87,9 +87,19 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - API: `PUT /api/budget`, `GET /api/usage`. Migration 0008, ADR 0010.
 - Tests (168 total): **budget stops a PR review run (failed, not retried, no comment, budget released)**; **outage of the primary fails over to the fallback, breaker opens after 3 failures and skips the dead model, then a probe closes it after recovery**; total outage is retryable and releases the reservation; `Retry-After` honoured and attempts bounded; 4xx not retried; tenant token bucket limits only that tenant; rate-limited messages retry without using attempts; 20 concurrent calls never overspend; alert fires once; Anthropic conversion and tool round trip; streaming and TTFT timeout; every call accounted with cost; semantic cache scoping and reuse.
 
+### M5 · LLM gateway (merged, `v0.5.0`)
+
+### M6 · Guardrails and approvals
+- Injection classifier (weighted intent rules incl. wrapper escape, hidden unicode, multilingual overrides); flagged runs get a reduced tool set, a warning in the review, and an echo filter for verbatim-copied injected text.
+- Output scanning (secrets + PII) before posting/returning; secret redaction in the JSON log formatter; wrapper-escape neutralisation; repo-relative paths only; egress allowlist transport in the worker.
+- Approvals: per-tenant `require_approval_for` (`PUT /api/settings`), `approval` step parks the run in `waiting_approval` (no lease, no worker), `GET/POST /api/approvals` decide (member + repo access, final, audited), the decision re-queues the run which resumes by replay. Migration 0009.
+- Injection eval `argus-eval-injection` (30 cases, hijacked-model mock) with ablations; report in `evals/reports/injection.md`. ADR 0011.
+- Result: **ASR 3.5% (1/29), 0 false positives**; no classifier 31.0%, no output scanning 17.2%. The first run was 34.5% and found real gaps that were fixed (see ADR 0011).
+- Tests (188 total): eval ASR ≤ 5%, no severe category succeeds, each layer matters; classifier positives/negatives; scanner; wrapper; path binding; egress; log redaction; flagged PR → reduced tools + warning; approval parks, viewer cannot decide, approve resumes without new LLM calls and posts once, decisions final; rejection cancels.
+
 ## Next
 
-- **M6 · Guardrails and approvals:** injection classifier on untrusted input (flagged runs get a reduced tool set and a warning), secret and PII output scanning before anything is posted (redact/block), egress allowlist for tools, approval flow for write actions (`waiting_approval`, dashboard/Slack decision re-enqueues the run), injection test set with attack success rate.
+- **M7 · Observability:** OpenTelemetry across queue hops (trace context in outbox/stream messages), spans for LLM calls and tools, Prometheus metrics (queue depth/age, DLQ, run outcomes, tokens/cost, breaker state), Grafana dashboards, SLO burn-rate alerts, Langfuse for LLM traces. Done when one trace shows webhook to GitHub comment.
 
 ## Blockers waiting on the owner
 

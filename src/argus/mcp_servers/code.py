@@ -5,6 +5,7 @@ the default branch); ``read_file`` and the PR tools read GitHub at the run's com
 """
 
 import posixpath
+import re
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -22,7 +23,10 @@ def safe_path(path: str) -> str:
     """Normalise a repo-relative path; reject absolute paths and traversal."""
     if not path or len(path) > 500 or "\x00" in path:
         raise ToolError("invalid path")
-    norm = posixpath.normpath(path.strip().lstrip("/"))
+    path = path.strip()
+    if path.startswith(("/", "~", "\\")) or re.match(r"^[A-Za-z]:", path) or "://" in path:
+        raise ToolError("path must be relative to the repository root")
+    norm = posixpath.normpath(path)
     if norm.startswith("..") or norm == ".":
         raise ToolError("path must stay inside the repository")
     return norm

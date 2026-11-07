@@ -25,6 +25,7 @@ from argus.gateway.providers import AnthropicProvider, OpenAIProvider, Provider
 from argus.gateway.semcache import QACache
 from argus.github.auth import InstallationTokenProvider
 from argus.github.client import GitHubClient
+from argus.guardrails.egress import EgressGuard
 from argus.logging import configure_logging
 from argus.queue.consumer import run_consumer
 from argus.queue.streams import StreamQueue
@@ -91,7 +92,9 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
     pool = await create_pool(settings.database_url, max_size=max(5, settings.worker_concurrency))
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
     timeout = httpx.Timeout(settings.llm_timeout_s, connect=5.0)
-    async with httpx.AsyncClient(timeout=timeout) as http:
+    egress = EgressGuard(settings.egress_hosts())
+    log.info("egress allowlist", extra={"hosts": sorted(egress.allowed)})
+    async with httpx.AsyncClient(timeout=timeout, transport=egress) as http:
         tokens = InstallationTokenProvider(
             http,
             redis,

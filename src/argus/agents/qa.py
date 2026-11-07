@@ -17,9 +17,12 @@ from typing import Any
 import asyncpg
 
 from argus.agents.toolloop import audit_hook, run_tool_loop, wrap_untrusted
+from argus.auth import audit
 from argus.gateway import TenantBudgetExceededError
 from argus.gateway.semcache import QACache
 from argus.github.client import GitHubClient
+from argus.guardrails.output import scan
+from argus.guardrails.runtime import InjectionGuard
 from argus.llm.client import ModelSource
 from argus.mcp_servers import RunContext
 from argus.mcp_servers.code import build_code_server
@@ -36,7 +39,7 @@ from argus.runs import (
     release_run,
 )
 from argus.steps import BudgetExceededError, NonDeterminismError, StepRunner
-from argus.tools.hub import POLICIES, ToolHub
+from argus.tools.hub import POLICIES, REDUCED_TOOLS, ToolHub
 
 log = logging.getLogger("argus.agents.qa")
 
@@ -214,14 +217,30 @@ async def handle_qa_message(deps: QADeps, msg: Message) -> None:
         async with LeaseKeeper(deps.pool, lease, deps.lease_s):
             steps = StepRunner(deps.pool, lease)
             async with ToolHub([build_code_server(ctx)], POLICIES[AGENT_TYPE]) as hub:
+                guard = InjectionGuard(hub, REDUCED_TOOLS[AGENT_TYPE])
+                await guard.inspect("question", question)
                 final = await run_tool_loop(
                     steps,
                     deps.llm.for_run(run["tenant_id"], run_id, AGENT_TYPE),
                     hub,
                     build_messages(run["full_name"], question),
                     on_tool_decision=audit_hook(deps.pool, run["tenant_id"], AGENT_TYPE, run_id),
+                    on_tool_result=lambda tool, text: guard.inspect(f"tool:{tool}", text),
                 )
-            answer = str(final.get("content") or "").strip()
+            stripped, echoes = guard.strip_echoes(str(final.get("content") or "").strip())
+            scanned = scan(stripped)
+            answer = scanned.text
+            if scanned.findings:
+                await audit(
+                    deps.pool,
+                    run["tenant_id"],
+                    actor_type="agent",
+                    actor_id=f"{AGENT_TYPE}:{run_id}",
+                    action="guardrail.output",
+                    target="answer",
+                    decision="info",
+                    details={"redacted": scanned.findings},
+                )
             verified, unverified = await verify_citations(
                 deps.pool, run["repo_id"], run["full_name"], answer
             )
@@ -231,9 +250,21 @@ async def handle_qa_message(deps: QADeps, msg: Message) -> None:
                 "unverified_citations": unverified,
                 "index_commit": commit,
                 "model": final.get("model"),
+                "guardrails": {
+                    **guard.summary(),
+                    "output_redactions": scanned.findings,
+                    "echoes_removed": echoes,
+                },
             }
             await finish_run(deps.pool, lease, "succeeded", result=result)
-            if deps.cache is not None and commit and answer and not unverified:
+            if (
+                deps.cache is not None
+                and commit
+                and answer
+                and not unverified
+                and not guard.flagged
+                and not scanned.findings
+            ):
                 await deps.cache.store(
                     tenant_id=run["tenant_id"],
                     repo_id=run["repo_id"],

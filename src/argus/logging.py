@@ -1,4 +1,8 @@
-"""Structured JSON logging with request/run context fields on every line."""
+"""Structured JSON logging with request/run context fields on every line.
+
+Secrets are redacted at the formatter (message, extra fields, tracebacks), not by
+convention at call sites.
+"""
 
 import json
 import logging
@@ -6,6 +10,8 @@ import sys
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
+
+from argus.redact import redact, redact_text
 
 trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
 tenant_id_var: ContextVar[str | None] = ContextVar("tenant_id", default=None)
@@ -26,7 +32,7 @@ class JsonFormatter(logging.Formatter):
             "level": record.levelname,
             "service": self.service,
             "logger": record.name,
-            "msg": record.getMessage(),
+            "msg": redact_text(record.getMessage()),
         }
         for key, var in _CONTEXT_VARS.items():
             value = var.get()
@@ -34,9 +40,9 @@ class JsonFormatter(logging.Formatter):
                 payload[key] = value
         for key, value in record.__dict__.items():
             if key not in _RESERVED and not key.startswith("_"):
-                payload[key] = value
+                payload[key] = redact({key: value})[key]
         if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+            payload["exc"] = redact_text(self.formatException(record.exc_info))
         return json.dumps(payload, default=str)
 
 

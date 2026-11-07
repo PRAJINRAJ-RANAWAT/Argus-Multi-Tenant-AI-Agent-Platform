@@ -32,6 +32,13 @@ class AgentToolPolicy:
     runtime_tools: frozenset[str] = frozenset()
 
 
+# Tools left to an agent whose input looks like a prompt injection: read the change, but
+# nothing that could widen what the model sees or reaches.
+REDUCED_TOOLS: dict[str, frozenset[str]] = {
+    "pr_review": frozenset({"get_pr_diff", "list_changed_files"}),
+    "qa": frozenset({"search_code"}),
+}
+
 POLICIES: dict[str, AgentToolPolicy] = {
     "pr_review": AgentToolPolicy(
         model_tools=frozenset(
@@ -93,6 +100,13 @@ class ToolHub:
         self, et: type[BaseException] | None, e: BaseException | None, tb: TracebackType | None
     ) -> None:
         await self._stack.aclose()
+
+    def restrict(self, model_tools: frozenset[str]) -> None:
+        """Narrow the model's tools for the rest of the run (never widens)."""
+        self.policy = AgentToolPolicy(
+            model_tools=self.policy.model_tools & model_tools,
+            runtime_tools=self.policy.runtime_tools,
+        )
 
     def model_specs(self) -> list[dict[str, Any]]:
         """OpenAI-style function specs for the allowlisted model tools."""

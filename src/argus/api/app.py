@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response, Streamin
 from pydantic import BaseModel, Field
 
 from argus.agents.qa import QAError, create_qa_run
+from argus.approvals import decide
 from argus.auth import RANK, Principal, audit, tenant_conn
 from argus.auth.apikeys import create_key, principal_for_key
 from argus.auth.oauth import (
@@ -597,6 +598,120 @@ async def list_audit(
             for r in rows
         ],
     }
+
+
+WRITE_TOOLS = frozenset({"post_review_comment", "open_issue"})
+
+
+class SettingsRequest(BaseModel):
+    require_approval_for: list[str] = Field(default_factory=list, max_length=20)
+
+
+@api.put("/settings")
+async def put_settings(
+    request: Request, p: CurrentPrincipal, body: SettingsRequest
+) -> dict[str, object]:
+    await require(request, p, "budgets:manage", "settings.set")
+    unknown = set(body.require_approval_for) - WRITE_TOOLS
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"not write tools: {sorted(unknown)}")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        await conn.execute(
+            """
+            INSERT INTO tenant_settings (tenant_id, require_approval_for) VALUES ($1, $2)
+            ON CONFLICT (tenant_id) DO UPDATE
+            SET require_approval_for = EXCLUDED.require_approval_for, updated_at = now()
+            """,
+            p.tenant_id,
+            sorted(set(body.require_approval_for)),
+        )
+        await audit(
+            conn,
+            p.tenant_id,
+            actor_type=p.actor_type,
+            actor_id=p.actor_id,
+            action="settings.set",
+            target=None,
+            decision="allow",
+            details=body.model_dump(),
+        )
+    return {"require_approval_for": sorted(set(body.require_approval_for))}
+
+
+@api.get("/approvals")
+async def list_approvals(
+    request: Request, p: CurrentPrincipal, status: str = "pending"
+) -> dict[str, object]:
+    await require(request, p, "runs:read", "approvals.list")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT a.id, a.run_id, a.tool, a.preview::text AS preview, a.status,
+                   a.requested_at, a.decided_by, r.repo_id, p.full_name, p.private
+            FROM approvals a JOIN runs r ON r.id = a.run_id LEFT JOIN repos p ON p.id = r.repo_id
+            WHERE a.status = $1 ORDER BY a.requested_at
+            """,
+            status,
+        )
+    rows = await _visible(request, p, rows)
+    return {
+        "approvals": [
+            {
+                "id": str(r["id"]),
+                "run_id": str(r["run_id"]),
+                "tool": r["tool"],
+                "repo": r["full_name"],
+                "status": r["status"],
+                "preview": json.loads(r["preview"]),
+                "requested_at": r["requested_at"].isoformat(),
+                "decided_by": r["decided_by"],
+            }
+            for r in rows
+        ]
+    }
+
+
+class DecisionRequest(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
+    reason: str | None = Field(default=None, max_length=500)
+
+
+@api.post("/approvals/{approval_id}")
+async def decide_approval(
+    request: Request, p: CurrentPrincipal, approval_id: uuid.UUID, body: DecisionRequest
+) -> dict[str, object]:
+    await require(request, p, "approvals:decide", "approvals.decide")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT a.status, r.repo_id, p.full_name, p.private
+            FROM approvals a JOIN runs r ON r.id = a.run_id LEFT JOIN repos p ON p.id = r.repo_id
+            WHERE a.id = $1
+            """,
+            approval_id,
+        )
+        if row is None or not await _visible(request, p, [row]):
+            raise HTTPException(status_code=404, detail="approval not found")
+        run_id = await decide(
+            conn,
+            approval_id,
+            approve=body.decision == "approve",
+            actor=f"{p.actor_type}:{p.actor_id}",
+            reason=body.reason,
+        )
+        if run_id is None:
+            raise HTTPException(status_code=409, detail=f"already {row['status']}")
+        await audit(
+            conn,
+            p.tenant_id,
+            actor_type=p.actor_type,
+            actor_id=p.actor_id,
+            action=f"approval.{body.decision}",
+            target=str(approval_id),
+            decision="allow",
+            details={"run_id": str(run_id), "reason": body.reason},
+        )
+    return {"approval_id": str(approval_id), "run_id": str(run_id), "decision": body.decision}
 
 
 class BudgetRequest(BaseModel):
