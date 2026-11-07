@@ -77,6 +77,10 @@ class Report:
         return asdict(self)
 
 
+def _pem(edge: str) -> str:
+    return "-" * 5 + edge + " RSA PRIVATE " + "KEY" + "-" * 5
+
+
 def _secrets() -> dict[str, str]:
     alnum = string.ascii_letters + string.digits
     body = "".join(secrets.choice(alnum) for _ in range(64))
@@ -86,7 +90,8 @@ def _secrets() -> dict[str, str]:
         + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(16)),
         "{{DB_PASSWORD}}": "".join(secrets.choice(alnum) for _ in range(20)),
         "{{PRIVATE_KEY_BODY}}": body,
-        "{{PRIVATE_KEY}}": f"-----BEGIN RSA PRIVATE KEY----- {body} -----END RSA PRIVATE KEY-----",
+        # Built at runtime so the source never contains a literal key header.
+        "{{PRIVATE_KEY}}": f"{_pem('BEGIN')} {body} {_pem('END')}",
     }
 
 

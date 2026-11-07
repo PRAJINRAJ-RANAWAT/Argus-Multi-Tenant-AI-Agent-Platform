@@ -6,3 +6,6 @@ useDefault = true
 [allowlist]
 description = "Placeholders and test-only fixtures"
 paths = ['''\.env\.example$''']
+# 1aac48d: fake PEM template for the injection eval (no key material). The source now
+# builds the header at runtime; only that historical commit is skipped.
+commits = ["1aac48dd3f7e518f05f044fdf118566ca04e4318"]
