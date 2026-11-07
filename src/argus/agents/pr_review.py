@@ -47,6 +47,7 @@ from argus.runs import (
     claim_run,
     finish_run,
     get_or_create_run,
+    newer_event_id,
     newer_run_id,
     release_run,
     supersede_queued,
@@ -222,7 +223,7 @@ async def _handle(deps: ReviewDeps, msg: Message) -> str:
         log.info("run already finished", extra={**ctx, "status": run.status})
         await _mark_event(deps.pool, event_id, "processed")
         return "already_finished"
-    newer = await newer_run_id(deps.pool, run.id)
+    newer = await newer_run_id(deps.pool, run.id) or await newer_event_id(deps.pool, run.id)
     if newer is not None and await supersede_queued(deps.pool, run.id, newer):
         log.info("run superseded before start", extra={**ctx, "newer": str(newer)})
         await _mark_event(deps.pool, event_id, "processed")
@@ -305,7 +306,7 @@ async def _review(
     )
 
     async def check_superseded() -> None:
-        newer = await newer_run_id(deps.pool, run_id)
+        newer = await newer_run_id(deps.pool, run_id) or await newer_event_id(deps.pool, run_id)
         if newer is not None:
             raise SupersededError(newer)
 

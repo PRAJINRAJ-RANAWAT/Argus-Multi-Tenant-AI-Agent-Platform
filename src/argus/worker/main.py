@@ -32,11 +32,12 @@ from argus.http_tracing import TracingTransport
 from argus.logging import configure_logging
 from argus.metrics import QUEUE_DEPTH, QUEUE_OLDEST_AGE
 from argus.queue.consumer import run_consumer
+from argus.queue.fair import FairQueue
 from argus.queue.streams import StreamQueue
 from argus.queue.topics import JOBS_EVAL, JOBS_INDEX, JOBS_QA, JOBS_REVIEW
 from argus.rag.embed import HttpEmbedder
 from argus.rag.jobs import IndexDeps, handle_index_message
-from argus.runs import reap_runs
+from argus.runs import reap_events, reap_runs
 from argus.telemetry import configure_tracing
 
 log = logging.getLogger("argus.worker")
@@ -56,6 +57,9 @@ async def reaper_loop(pool: asyncpg.Pool, stop: asyncio.Event, interval_s: float
             n = await reap_runs(pool, TOPIC_FOR_AGENT)
             if n:
                 log.warning("reaped runs", extra={"count": n})
+            e = await reap_events(pool)
+            if e:
+                log.warning("re-enqueued lost events", extra={"count": e})
         except Exception:
             log.exception("run reaper failed")
         with contextlib.suppress(TimeoutError):
@@ -89,7 +93,9 @@ def build_gateway(
     return Gateway(providers, redis, pool, config)
 
 
-async def queue_gauges(queues: list[StreamQueue], stop: asyncio.Event, every_s: float = 15) -> None:
+async def queue_gauges(
+    queues: list[StreamQueue | FairQueue], stop: asyncio.Event, every_s: float = 15
+) -> None:
     """Publish queue depth and oldest-message age for Prometheus."""
     while not stop.is_set():
         for q in queues:
@@ -150,10 +156,28 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
             cache=QACache(pool, embedder, settings.qa_cache_threshold),
         )
 
-        review_q = StreamQueue(redis, JOBS_REVIEW, REVIEW_GROUP, worker_id)
-        index_q = StreamQueue(redis, JOBS_INDEX, INDEX_GROUP, worker_id)
-        qa_q = StreamQueue(redis, JOBS_QA, QA_GROUP, worker_id)
-        eval_q = StreamQueue(redis, JOBS_EVAL, EVAL_GROUP, worker_id)
+        fair = settings.fair_topic_set()
+
+        def queue_for(topic: str, group: str) -> StreamQueue | FairQueue:
+            if topic in fair:
+                return FairQueue(
+                    redis, topic, group, worker_id, tenant_cap=settings.tenant_concurrency
+                )
+            return StreamQueue(redis, topic, group, worker_id)
+
+        review_q = queue_for(JOBS_REVIEW, REVIEW_GROUP)
+        index_q = queue_for(JOBS_INDEX, INDEX_GROUP)
+        qa_q = queue_for(JOBS_QA, QA_GROUP)
+        eval_q = queue_for(JOBS_EVAL, EVAL_GROUP)
+
+        async def interactive_lagging() -> bool:
+            """Shed indexing and evals while reviews or Q&A wait too long."""
+            for q in (review_q, qa_q):
+                with contextlib.suppress(Exception):
+                    if await q.oldest_age_s() > settings.shed_low_priority_after_s:
+                        return True
+            return False
+
         log.info(
             "worker started",
             extra={
@@ -176,6 +200,7 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
                     functools.partial(handle_index_message, index_deps),
                     stop,
                     concurrency=settings.index_concurrency,
+                    pause_if=interactive_lagging,
                 ),
                 run_consumer(
                     qa_q,
@@ -188,6 +213,7 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
                     functools.partial(handle_eval_message, pool, deps.llm),
                     stop,
                     concurrency=2,
+                    pause_if=interactive_lagging,
                 ),
             )
         finally:

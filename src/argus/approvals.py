@@ -107,18 +107,21 @@ async def decide(
     )
     if run_id is None:
         return None
-    agent = await conn.fetchval(
+    row = await conn.fetchrow(
         """
-        UPDATE runs SET status = 'queued', updated_at = now()
-        WHERE id = $1 AND status = 'waiting_approval'
-        RETURNING agent_type
+        UPDATE runs r SET status = 'queued', updated_at = now()
+        FROM tenants t
+        WHERE r.id = $1 AND r.status = 'waiting_approval' AND t.id = r.tenant_id
+        RETURNING r.agent_type, 'inst:' || t.github_installation_id AS fair_key
         """,
         run_id,
     )
-    if agent in TOPIC_FOR_AGENT:
+    if row is not None and row["agent_type"] in TOPIC_FOR_AGENT:
         await conn.execute(
             "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",
-            TOPIC_FOR_AGENT[agent],
-            json.dumps({"run_id": str(run_id), "reason": "approval_decided"}),
+            TOPIC_FOR_AGENT[row["agent_type"]],
+            json.dumps(
+                {"run_id": str(run_id), "reason": "approval_decided", "fair_key": row["fair_key"]}
+            ),
         )
     return run_id

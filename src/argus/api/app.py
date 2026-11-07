@@ -8,8 +8,10 @@ decisions on sensitive actions are written to the audit log.
 """
 
 import asyncio
+import hashlib
 import hmac
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -68,6 +70,7 @@ async def get_principal(
     authorization: Annotated[str | None, Header()] = None,
     x_argus_tenant: Annotated[str | None, Header()] = None,
     argus_session: Annotated[str | None, Cookie()] = None,
+    argus_tenant: Annotated[str | None, Cookie()] = None,
 ) -> Principal:
     res = _resources(request)
     if authorization:
@@ -82,12 +85,14 @@ async def get_principal(
     rows = await res.db.fetch("SELECT * FROM argus_user_memberships($1)", session.user_id)
     if not rows:
         raise HTTPException(status_code=403, detail="no Argus installation for this user")
-    if x_argus_tenant:
-        rows = [r for r in rows if r["account_login"].lower() == x_argus_tenant.lower()]
-        if not rows:
+    # Tenant: X-Argus-Tenant header, else the dashboard's tenant cookie, else the first
+    # membership (alphabetical). Membership is always required.
+    wanted = x_argus_tenant or argus_tenant
+    if wanted:
+        chosen = [r for r in rows if r["account_login"].lower() == wanted.lower()]
+        if not chosen and x_argus_tenant:
             raise HTTPException(status_code=403, detail="not a member of that tenant")
-    elif len(rows) > 1:
-        raise HTTPException(status_code=400, detail="choose a tenant with X-Argus-Tenant")
+        rows = chosen or rows
     row = rows[0]
     return Principal(
         tenant_id=row["tenant_id"],
@@ -258,6 +263,47 @@ async def callback(request: Request, code: str = "", state: str = "") -> Redirec
         httponly=True,
         secure=res.settings.cookie_secure,
         samesite="lax",
+    )
+    return resp
+
+
+@auth.get("/dev-login")
+async def dev_login(request: Request, login: str = "demo", next: str = "/dashboard") -> Response:
+    """Local demo sign-in: owner of every tenant. Off unless ARGUS_ENV=dev and
+    ARGUS_DEV_LOGIN=true; never enabled in production."""
+    res = _resources(request)
+    if res.settings.env != "dev" or not res.settings.dev_login:
+        raise HTTPException(status_code=404)
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,39}", login):
+        raise HTTPException(status_code=422, detail="invalid login")
+    async with res.db.acquire() as conn, conn.transaction():
+        user_id = await conn.fetchval(
+            """
+            INSERT INTO users (github_id, github_login, name, last_login_at)
+            VALUES ($1, $2, $2, now())
+            ON CONFLICT (github_id) DO UPDATE SET last_login_at = now() RETURNING id
+            """,
+            -(int(hashlib.sha256(login.encode()).hexdigest()[:12], 16) % 10**9) - 1,
+            login,
+        )
+        await conn.execute(
+            """
+            INSERT INTO memberships (tenant_id, user_id, role, source)
+            SELECT id, $1, 'owner', 'manual' FROM tenants
+            ON CONFLICT (tenant_id, user_id) DO NOTHING
+            """,
+            user_id,
+        )
+    session_id = await create_session(res.redis, user_id, login, res.settings.session_ttl_s)
+    target = next if next.startswith("/") and not next.startswith("//") else "/dashboard"
+    resp = RedirectResponse(target, status_code=302)
+    resp.set_cookie(
+        COOKIE,
+        session_id,
+        httponly=True,
+        secure=res.settings.cookie_secure,
+        samesite="lax",
+        max_age=res.settings.session_ttl_s,
     )
     return resp
 

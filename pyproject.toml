@@ -32,6 +32,8 @@ argus-worker = "argus.worker.main:main"
 argus-relay = "argus.queue.relay:main"
 argus-eval-injection = "argus.evals.injection:main"
 argus-eval = "argus.evals.suite:main"
+argus-autoscale = "argus.autoscale:main"
+argus-demo = "argus.demo:main"
 
 [dependency-groups]
 dev = [

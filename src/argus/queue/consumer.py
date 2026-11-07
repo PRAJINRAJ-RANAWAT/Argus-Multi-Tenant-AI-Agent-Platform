@@ -5,17 +5,39 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
 from opentelemetry.trace import SpanKind
 
 from argus.metrics import MESSAGES
-from argus.queue.streams import Message, StreamQueue
+from argus.queue.streams import Message
 from argus.telemetry import extract, span
 
 log = logging.getLogger(__name__)
 
 Handler = Callable[[Message], Awaitable[None]]
+
+
+class WorkQueue(Protocol):
+    """What the consumer needs: ``StreamQueue`` (one stream) or ``FairQueue`` (per-tenant
+    lanes) both provide it."""
+
+    stream: str
+
+    async def ensure_group(self) -> None: ...
+    async def read(self, count: int = 10, block_ms: int = 1000) -> list[Message]: ...
+    async def ack(self, msg: Message) -> bool: ...
+    async def retry(
+        self,
+        msg: Message,
+        error: str,
+        *,
+        min_delay_s: float | None = None,
+        count_attempt: bool = True,
+    ) -> str: ...
+    async def dead_letter(self, msg: Message, error: str) -> str: ...
+    async def promote_due(self, limit: int = 100, now_ms: int | None = None) -> int: ...
+    async def reclaim(self, count: int = 50, min_idle_ms: int | None = None) -> list[Message]: ...
 
 
 class PermanentError(Exception):
@@ -34,7 +56,7 @@ def _parent(msg: Message) -> Any:
     return extract(data.get("trace") if isinstance(data, dict) else None)
 
 
-async def handle_one(queue: StreamQueue, handler: Handler, msg: Message) -> str:
+async def handle_one(queue: WorkQueue, handler: Handler, msg: Message) -> str:
     with span(
         f"queue.process {queue.stream}",
         kind=SpanKind.CONSUMER,
@@ -47,7 +69,22 @@ async def handle_one(queue: StreamQueue, handler: Handler, msg: Message) -> str:
         return outcome
 
 
-async def _handle_one(queue: StreamQueue, handler: Handler, msg: Message) -> str:
+async def _handle_one(queue: WorkQueue, handler: Handler, msg: Message) -> str:
+    try:
+        return await _settle(queue, handler, msg)
+    except Exception:
+        # The queue itself failed (e.g. Redis restarting) while acking or retrying. The
+        # message stays pending and is reclaimed after the visibility timeout; the work
+        # is idempotent, so redoing it is safe.
+        log.warning(
+            "queue operation failed; message left for reclaim",
+            extra={"msg_id": msg.id},
+            exc_info=True,
+        )
+        return "unsettled"
+
+
+async def _settle(queue: WorkQueue, handler: Handler, msg: Message) -> str:
     try:
         await handler(msg)
     except PermanentError as exc:
@@ -68,13 +105,14 @@ async def _handle_one(queue: StreamQueue, handler: Handler, msg: Message) -> str
 
 
 async def run_consumer(
-    queue: StreamQueue,
+    queue: WorkQueue,
     handler: Handler,
     stop: asyncio.Event,
     *,
     concurrency: int = 10,
     block_ms: int = 500,
     housekeeping_s: float = 1.0,
+    pause_if: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     """Single loop: never more than ``concurrency`` handlers in flight.
 
@@ -95,6 +133,11 @@ async def run_consumer(
         while not stop.is_set():
             if len(tasks) >= concurrency:
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                continue
+            if pause_if is not None and await pause_if():
+                # Load shedding: low-priority work waits while interactive queues lag.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop.wait(), timeout=1.0)
                 continue
             try:
                 if loop.time() >= next_housekeeping:

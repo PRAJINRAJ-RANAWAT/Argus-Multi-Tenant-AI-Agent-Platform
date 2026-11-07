@@ -27,6 +27,8 @@ class FakeGitHub:
         default_factory=lambda: {"app.py": "def retry():\n    return 3\n"}
     )
     ci_state: str = "success"
+    pr_diffs: dict[tuple[str, int], str] = field(default_factory=dict)
+    default_permission: str = "none"  # for users not in repo_permissions
     head_sha: str = "c" * 40
     file_reads: list[str] = field(default_factory=list)
     # OAuth: code -> user {"id", "login", "name", "installations": [(id, login, type)],
@@ -88,7 +90,7 @@ class FakeGitHub:
         if not auth.startswith("Bearer ghs_fake_"):
             return httpx.Response(401, json={"message": "Bad credentials"})
         if m := re.fullmatch(r"/repos/([^/]+/[^/]+)/collaborators/([^/]+)/permission", path):
-            perm = self.repo_permissions.get((m.group(1), m.group(2)), "none")
+            perm = self.repo_permissions.get((m.group(1), m.group(2)), self.default_permission)
             return httpx.Response(200, json={"permission": perm, "role_name": perm})
         if re.fullmatch(r"/repos/([^/]+/[^/]+)/git/trees/([^/]+)", path):
             tree = [
@@ -122,7 +124,8 @@ class FakeGitHub:
                 status, self.fail_diff_with = self.fail_diff_with, None
                 return httpx.Response(status, json={"message": "injected"})
             if "diff" in request.headers.get("accept", ""):
-                return httpx.Response(200, text=self.diff)
+                key = (m.group(1), int(m.group(2)))
+                return httpx.Response(200, text=self.pr_diffs.get(key, self.diff))
             return httpx.Response(200, json={"number": int(m.group(2))})
         if m := re.fullmatch(r"/repos/([^/]+/[^/]+)/issues/(\d+)/comments", path):
             key = (m.group(1), int(m.group(2)))

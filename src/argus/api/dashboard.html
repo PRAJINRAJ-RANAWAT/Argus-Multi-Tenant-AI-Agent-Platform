@@ -29,14 +29,32 @@
              text-decoration:none; }
   .wrap { overflow-x:auto; }
   #msg { color:var(--muted); }
+  form { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 16px; }
+  select { padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:transparent;
+           color:inherit; font:inherit; }
+  input { flex:1; min-width:200px; padding:6px 8px; border:1px solid var(--line); border-radius:6px;
+          background:transparent; color:inherit; font:inherit; }
+  button { padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:transparent;
+           color:inherit; font:inherit; cursor:pointer; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:color-mix(in srgb, var(--line) 40%, transparent); }
+  #detail { white-space:pre-wrap; border:1px solid var(--line); border-radius:6px; padding:12px;
+            margin-top:16px; overflow-x:auto; }
+  h2 { font-size:14px; margin:24px 0 8px; }
 </style>
 </head>
 <body>
 <header>
   <h1>Argus</h1><span class="live" id="live">offline</span>
+  <select id="tenant" hidden aria-label="Tenant"></select>
   <span class="who" id="who"></span>
 </header>
 <main>
+  <form id="qa" hidden>
+    <input id="qa-repo" placeholder="owner/repo" aria-label="Repository">
+    <input id="qa-q" placeholder="Ask the codebase, e.g. How do we retry with backoff?" aria-label="Question">
+    <button type="submit">Ask</button>
+  </form>
   <p id="msg">Loading…</p>
   <div class="wrap">
     <table id="runs" hidden>
@@ -45,6 +63,8 @@
       <tbody></tbody>
     </table>
   </div>
+  <h2 id="detail-title" hidden>Run detail</h2>
+  <div id="detail" hidden></div>
 </main>
 <script>
 const tbody = document.querySelector("#runs tbody");
@@ -57,6 +77,18 @@ function cell(text, cls) {
   return td;
 }
 
+function showDetail(run) {
+  const box = document.getElementById("detail");
+  const r = run.result || {};
+  const text = r.review || r.answer || run.error || JSON.stringify(r, null, 2);
+  const cites = (r.citations || []).map((c) => "  " + c.citation).join("\n");
+  box.textContent = `${run.agent_type} · ${run.status} · ${run.repo || ""}\n\n${text}` +
+    (cites ? `\n\nCitations:\n${cites}` : "") +
+    (r.guardrails ? `\n\nGuardrails: ${JSON.stringify(r.guardrails)}` : "");
+  box.hidden = false;
+  document.getElementById("detail-title").hidden = false;
+}
+
 function render(run) {
   let tr = rows.get(run.id);
   if (!tr) {
@@ -64,6 +96,7 @@ function render(run) {
     rows.set(run.id, tr);
     tbody.prepend(tr);
   }
+  tr.onclick = () => refreshRun(run.id, true);
   tr.replaceChildren(
     cell(run.status, "s " + run.status),
     cell(run.agent_type),
@@ -83,6 +116,20 @@ async function load() {
     return false;
   }
   const who = await me.json();
+  const picker = document.getElementById("tenant");
+  if (who.tenants.length > 1) {
+    picker.replaceChildren(...who.tenants.map((t) => {
+      const o = document.createElement("option");
+      o.value = o.textContent = t.login;
+      o.selected = t.login === who.tenant.login;
+      return o;
+    }));
+    picker.hidden = false;
+    picker.onchange = () => {
+      document.cookie = `argus_tenant=${encodeURIComponent(picker.value)}; path=/; samesite=lax`;
+      location.reload();
+    };
+  }
   document.getElementById("who").textContent =
     `${who.actor.github_login || who.actor.type} · ${who.tenant.login} (${who.tenant.role})`;
   const res = await fetch("/api/runs?limit=100", { credentials: "same-origin" });
@@ -91,14 +138,36 @@ async function load() {
   rows.clear();
   data.runs.slice().reverse().forEach(render);
   document.getElementById("runs").hidden = false;
+  document.getElementById("qa").hidden = false;
+  const firstRepo = data.runs.find((r) => r.repo);
+  if (firstRepo) document.getElementById("qa-repo").value = firstRepo.repo;
   document.getElementById("msg").textContent = data.runs.length ? "" : "No runs yet.";
   return true;
 }
 
-async function refreshRun(id) {
+async function refreshRun(id, show) {
   const res = await fetch(`/api/runs/${id}`, { credentials: "same-origin" });
-  if (res.ok) render(await res.json());
+  if (!res.ok) return;
+  const run = await res.json();
+  render(run);
+  if (show) showDetail(run);
 }
+
+document.getElementById("qa").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const repo = document.getElementById("qa-repo").value.trim();
+  const question = document.getElementById("qa-q").value.trim();
+  if (!repo || !question) return;
+  const res = await fetch("/api/qa", {
+    method: "POST", credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repo, question }),
+  });
+  const body = await res.json();
+  document.getElementById("msg").textContent =
+    res.ok ? "Question queued; it appears below when answered." : (body.detail || "Error");
+  if (res.ok) setTimeout(() => refreshRun(body.run_id, true), 1500);
+});
 
 function connect() {
   const live = document.getElementById("live");

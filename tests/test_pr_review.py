@@ -159,10 +159,13 @@ async def test_relay_republish_is_harmless(env: Env) -> None:
 
 async def test_new_head_sha_gets_its_own_review(env: Env) -> None:
     await env.deliver(pr_payload(head_sha="a" * 40))
+    await env.drain()  # reviewed before the next push arrives
     await env.deliver(pr_payload(action="synchronize", head_sha="c" * 40))
     await env.drain()
     assert len(env.comments()) == 2
     assert await env.pool.fetchval("SELECT count(*) FROM runs") == 2
+    # (When both pushes are queued before either runs, the older one is superseded:
+    # see test_force_push_churn_leaves_one_final_review.)
 
 
 async def test_concurrent_workers_post_once(env: Env) -> None:

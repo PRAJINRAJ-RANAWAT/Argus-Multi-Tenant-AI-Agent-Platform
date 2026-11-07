@@ -116,10 +116,13 @@ async def create_qa_run(
             key,
         )
         return existing, False
+    installation = await conn.fetchval(
+        "SELECT github_installation_id FROM tenants WHERE id = $1", tenant_id
+    )
     await conn.execute(
         "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",
         JOBS_QA,
-        json.dumps({"run_id": str(run_id)}),
+        json.dumps({"run_id": str(run_id), "fair_key": f"inst:{installation}"}),
     )
     return run_id, True
 

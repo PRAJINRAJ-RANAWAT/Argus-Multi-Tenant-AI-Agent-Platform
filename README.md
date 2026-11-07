@@ -160,7 +160,7 @@ sequenceDiagram
 
 ### Design targets
 
-Designed for **500 tenants and 100,000 events/day** (300/s replay bursts, ~450 concurrent runs at peak), proven with load tests against the mock LLM in M9.
+Designed for **500 tenants and 100,000 events/day** (300/s replay bursts, ~450 concurrent runs at peak), proven with load tests against the mock LLM: 300 webhooks/s at p99 115 ms, zero lost events ([report](docs/load-and-chaos-report.md)).
 
 | SLO | Target |
 |---|---|
@@ -170,6 +170,27 @@ Designed for **500 tenants and 100,000 events/day** (300/s replay bursts, ~450 c
 | Duplicate reviews per (repo, PR, head SHA) | 0 |
 | Lost events | 0 (every accepted event ends completed, failed with a reason, or in the DLQ) |
 | Cross-tenant data access | 0, covered by automated tests |
+
+## Try the demo
+
+Everything runs locally with a fake GitHub and a mock LLM, no keys needed:
+
+```bash
+make demo   # builds and starts the stack, observability and a fake GitHub; seeds PRs
+```
+
+Then open:
+
+| What | URL |
+|---|---|
+| Dashboard (signs you in as a demo owner) | http://localhost:8000/auth/dev-login?login=demo |
+| Reviews Argus posted (fake GitHub) | http://localhost:9000/_fake/comments |
+| API docs | http://localhost:8000/docs |
+| Grafana ("Argus overview") | http://localhost:3000 |
+| Traces (Jaeger, service `argus-ingest`) | http://localhost:16686 |
+| Prometheus | http://localhost:9090 |
+
+The seeded PRs carry planted bugs (SQL injection, a hardcoded secret, off-by-one, a missing None check), one clean PR and one with a prompt injection. Ask the codebase from the dashboard, e.g. "How do we retry with exponential backoff?". `make demo-down` stops it.
 
 ## Quick start
 
@@ -220,7 +241,7 @@ src/argus/
   runs.py      runs: idempotent create, lease claim, fencing, reaper
   tools/       side-effect ledger (exactly-once external calls)
   github/      webhook signatures, App JWT, installation tokens, REST client
-  llm/         OpenAI-compatible client (gateway arrives in M5)
+  llm/         OpenAI-compatible client and the ChatModel protocol
   mock_llm/    fault-injecting mock provider for tests, load tests and demos
   api/ worker/ db/   API service, worker process, pool + migration runner
 migrations/    forward-only SQL, advisory-locked, checksummed
@@ -245,14 +266,14 @@ docs/          spec, ADRs, progress, deploy and GitHub App guides
 |---|---|---|
 | **M0** · Skeleton | Monorepo, Compose, CI, deploy pipeline | ✅ `v0.0.0` (live deploy pending VPS) |
 | **M1** · Webhook → review comment | GitHub App, signature check, dedupe, outbox, Streams, worker, idempotent comment | ✅ `v0.1.0`, `v0.1.1` (live install pending App) |
-| **M2** · Durable agent runtime | Step checkpointing, heartbeats, MCP tool loop, supersede on new commit, DLQ replay | ⏳ next |
-| **M3** · Code RAG | tree-sitter chunking, incremental indexing, hybrid search, cited Q&A in Slack | |
-| **M4** · Tenancy and auth | GitHub OAuth, roles, row-level security, audit log, live dashboard over SSE | |
-| **M5** · LLM gateway | Provider adapters, routing, prompt and semantic caching, token buckets, budgets, circuit breaker | |
-| **M6** · Guardrails | Injection classifier, secret/PII scanning, Slack approval flow, measured attack success rate | |
-| **M7** · Observability | One OpenTelemetry trace from webhook to comment, Grafana, SLO burn-rate alerts | |
-| **M8** · Evals in CI | Golden PR, Q&A and safety sets, LLM judge, merge gate | |
-| **M9** · Scale and chaos | Fair scheduling, autoscaling on lag, published load and chaos report | |
+| **M2** · Durable agent runtime | Step checkpointing, heartbeats, MCP tool loop, supersede on new commit, DLQ replay | ✅ `v0.2.0`, `v0.2.1` |
+| **M3** · Code RAG | tree-sitter chunking, incremental indexing, hybrid search, cited Q&A | ✅ `v0.3.0` (Slack pending app) |
+| **M4** · Tenancy and auth | GitHub OAuth, roles, row-level security, audit log, live dashboard over SSE | ✅ `v0.4.0` |
+| **M5** · LLM gateway | Provider adapters, routing, prompt and semantic caching, token buckets, budgets, circuit breaker | ✅ `v0.5.0` |
+| **M6** · Guardrails | Injection classifier, secret/PII scanning, approvals, measured attack success rate (3.5%) | ✅ `v0.6.0` |
+| **M7** · Observability | One OpenTelemetry trace from webhook to comment, Grafana, SLO burn-rate alerts | ✅ `v0.7.0` |
+| **M8** · Evals in CI | Golden PR, Q&A and safety sets, LLM judge, merge gate | ✅ `v0.8.0` |
+| **M9** · Scale and chaos | Fair scheduling, autoscaling on lag, [load and chaos report](docs/load-and-chaos-report.md) | ✅ `v0.9.0` |
 
 Live status: [docs/PROGRESS.md](docs/PROGRESS.md).
 
@@ -264,7 +285,18 @@ Live status: [docs/PROGRESS.md](docs/PROGRESS.md).
   [0002 single-VPS deploy](docs/adr/0002-single-vps-compose-deploy.md) ·
   [0003 webhook dedupe and outbox](docs/adr/0003-webhook-dedupe-and-outbox.md) ·
   [0004 Redis Streams vs Kafka vs NATS](docs/adr/0004-queue-redis-streams.md) ·
-  [0005 runs are the unit of durability](docs/adr/0005-runs-are-the-unit-of-durability.md)
+  [0005 runs are the unit of durability](docs/adr/0005-runs-are-the-unit-of-durability.md) ·
+  [0006 build the runtime vs Temporal](docs/adr/0006-build-durable-runtime-vs-temporal.md) ·
+  [0007 tools over MCP](docs/adr/0007-tools-over-mcp-bound-per-run.md) ·
+  [0008 pgvector](docs/adr/0008-pgvector-for-code-search.md) ·
+  [0009 tenant isolation](docs/adr/0009-tenant-isolation-rls-and-auth.md) ·
+  [0010 LLM gateway](docs/adr/0010-llm-gateway-in-process.md) ·
+  [0011 guardrails](docs/adr/0011-guardrails-layered-and-measured.md) ·
+  [0012 observability](docs/adr/0012-observability-otel-prometheus.md) ·
+  [0013 evals gate](docs/adr/0013-evals-gate-with-prompt-sensitive-mock.md) ·
+  [0014 fair scheduling](docs/adr/0014-fair-scheduling-per-tenant-lanes.md)
+- Results: [load and chaos report](docs/load-and-chaos-report.md) ·
+  [injection eval](evals/reports/injection.md) · [eval baseline](evals/baseline.json)
 - [Deploying to a VPS](docs/deploy.md) · [Registering the GitHub App](docs/github-app.md)
 
 ## Contributing
