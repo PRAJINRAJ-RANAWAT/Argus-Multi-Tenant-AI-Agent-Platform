@@ -1,5 +1,9 @@
 import ReactMarkdown from "react-markdown"
 
+// Reviews end with a GitHub-only "<sub>…</sub>" footer; show it as emphasis instead of
+// printing the tags (raw HTML is never rendered).
+const githubSub = /<sub>([^<]*)<\/sub>/g
+
 /** Renders review and answer Markdown. Raw HTML is not rendered (react-markdown
  *  escapes it by default), and links open in a new tab without referrer. */
 export function Markdown({ children }: { children: string }) {
@@ -19,7 +23,7 @@ export function Markdown({ children }: { children: string }) {
           ),
         }}
       >
-        {children}
+        {children.replace(githubSub, "*$1*")}
       </ReactMarkdown>
     </div>
   )

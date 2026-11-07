@@ -1110,7 +1110,10 @@ async def get_usage(
             SELECT model, count(*) AS calls, sum(input_tokens) AS input,
                    sum(output_tokens) AS output, sum(cached_tokens) AS cached,
                    sum(cost_usd) AS cost, count(*) FILTER (WHERE status <> 'ok') AS errors
-            FROM llm_calls WHERE created_at > now() - make_interval(days => $1)
+            FROM llm_calls
+            -- The same UTC calendar days as the daily rows above, so the totals agree.
+            WHERE created_at >= (((now() AT TIME ZONE 'UTC')::date - ($1::int - 1))::timestamp
+                                 AT TIME ZONE 'UTC')
             GROUP BY model ORDER BY model
             """,
             days,
