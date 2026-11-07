@@ -1,11 +1,16 @@
 """Run persistence: idempotent creation, lease claim with fencing, fenced completion."""
 
+import asyncio
+import contextlib
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
+
+log = logging.getLogger("argus.runs")
 
 TERMINAL = frozenset({"succeeded", "failed", "cancelled", "superseded"})
 
@@ -237,3 +242,62 @@ async def finish_run(
     )
     if tag != "UPDATE 1":
         raise LeaseLostError(str(lease.run_id))
+
+
+async def renew_lease(pool: asyncpg.Pool, lease: Lease, lease_s: float) -> bool:
+    """Extend the lease if this worker still holds it (fenced). False = lease lost."""
+    tag = await pool.execute(
+        """
+        UPDATE runs SET lease_expires_at = now() + make_interval(secs => $3), updated_at = now()
+        WHERE id = $1 AND lease_version = $2 AND status = 'running'
+        """,
+        lease.run_id,
+        lease.version,
+        lease_s,
+    )
+    return bool(tag == "UPDATE 1")
+
+
+class LeaseKeeper:
+    """Background heartbeat: renews a short lease every ``lease_s / 3`` seconds.
+
+    Use as ``async with LeaseKeeper(pool, lease, lease_s) as keeper:``. If a renewal finds
+    the lease gone (reaped, superseded), ``keeper.lost`` is set and renewals stop; every
+    fenced write fails with ``LeaseLostError`` from then on. Transient DB errors are
+    retried on the next tick; if they last past the lease, the reaper takes over.
+    """
+
+    def __init__(self, pool: asyncpg.Pool, lease: Lease, lease_s: float) -> None:
+        self.pool = pool
+        self.lease = lease
+        self.lease_s = lease_s
+        self.interval_s = lease_s / 3
+        self.lost = asyncio.Event()
+        self.renewals = 0
+        self._task: asyncio.Task[None] | None = None
+
+    async def _beat(self) -> None:
+        while True:
+            await asyncio.sleep(self.interval_s)
+            try:
+                ok = await renew_lease(self.pool, self.lease, self.lease_s)
+            except Exception:
+                log.warning(
+                    "lease renewal failed", exc_info=True, extra={"run_id": str(self.lease.run_id)}
+                )
+                continue
+            if not ok:
+                log.warning("lease lost", extra={"run_id": str(self.lease.run_id)})
+                self.lost.set()
+                return
+            self.renewals += 1
+
+    async def __aenter__(self) -> "LeaseKeeper":
+        self._task = asyncio.create_task(self._beat())
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
