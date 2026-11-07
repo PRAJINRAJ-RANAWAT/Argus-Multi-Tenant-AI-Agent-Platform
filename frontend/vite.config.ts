@@ -16,12 +16,19 @@ export default defineConfig({
     outDir: path.resolve(__dirname, "../src/argus/api/web"),
     emptyOutDir: true,
     rollupOptions: {
+      // Two pages: the dashboard SPA (index.html, served at /app) and the public landing
+      // page (landing.html, served at / by the API).
+      input: {
+        app: path.resolve(__dirname, "index.html"),
+        landing: path.resolve(__dirname, "landing.html"),
+      },
       output: {
         // Split rarely-changing vendor code so app updates do not bust its cache.
         manualChunks(id: string) {
           if (!id.includes("node_modules")) return undefined
           if (/recharts|d3-|victory/.test(id)) return "charts"
           if (/react-dom|react-router|[\\/]react[\\/]|scheduler/.test(id)) return "react"
+          if (/gsap|lenis/.test(id)) return "motion-scroll"
           if (/radix-ui|@radix-ui|cmdk|motion|sonner/.test(id)) return "ui"
           return undefined
         },

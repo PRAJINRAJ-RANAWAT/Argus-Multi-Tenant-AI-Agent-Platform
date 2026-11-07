@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Argus · AI code review and codebase Q&amp;A, built to run at scale</title>
+    <meta
+      name="description"
+      content="Argus reviews every pull request and answers questions about your codebase with cited files. Durable runs, per-tenant fair queues, an LLM gateway with budgets, row-level tenant isolation and evals on every change."
+    />
+    <link rel="canonical" href="__PUBLIC_URL__/" />
+    <meta name="theme-color" content="#1b1b1b" />
+    <link rel="icon" type="image/svg+xml" href="/app/favicon.svg" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Argus" />
+    <meta property="og:url" content="__PUBLIC_URL__/" />
+    <meta property="og:title" content="Argus · AI code review and codebase Q&amp;A, built to run at scale" />
+    <meta
+      property="og:description"
+      content="Reviews every pull request, answers questions with cited files, and keeps going through crashes, traffic floods and prompt injections. Try the live demo."
+    />
+    <meta property="og:image" content="__PUBLIC_URL__/app/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Argus: AI code review and codebase Q&amp;A for engineering teams" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Argus · AI code review and codebase Q&amp;A, built to run at scale" />
+    <meta name="twitter:description" content="Reviews every pull request, answers questions with cited files, built to run at scale." />
+    <meta name="twitter:image" content="__PUBLIC_URL__/app/og.png" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Argus",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Web",
+        "url": "__PUBLIC_URL__/",
+        "description": "AI code review and codebase Q&A for engineering teams, built to run at scale.",
+        "author": { "@type": "Person", "name": "Prajinraj Ranawat" }
+      }
+    </script>
+    <script>
+      // The landing page is dark-first; a saved choice from the app wins. Applied before
+      // first paint so the theme never flashes.
+      ;(function () {
+        var t = "dark"
+        try { t = localStorage.getItem("argus-theme") || "dark" } catch (e) {}
+        var dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches)
+        document.documentElement.classList.toggle("dark", dark)
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root">
+      <!-- Shown to crawlers and before the script runs; replaced on render. -->
+      <main style="max-width: 720px; margin: 15vh auto; padding: 0 20px; font-family: system-ui, sans-serif">
+        <h1>AI code review and codebase Q&amp;A for engineering teams, built to run at scale.</h1>
+        <p>
+          Argus reviews every pull request and answers questions about your code with citations, and keeps
+          doing it through crashes, traffic floods and prompt injections.
+        </p>
+        <p><a href="/demo">Try the live demo</a></p>
+      </main>
+    </div>
+    <script type="module" src="/src/landing/main.tsx"></script>
+  </body>
+</html>
