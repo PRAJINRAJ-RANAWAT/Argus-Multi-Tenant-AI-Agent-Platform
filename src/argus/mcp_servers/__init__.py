@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import asyncpg
 
 from argus.github.client import GitHubClient
+from argus.rag.embed import Embedder
 
 
 @dataclass(frozen=True)
@@ -28,3 +29,5 @@ class RunContext:
     max_diff_chars: int = 60_000
     max_file_chars: int = 20_000
     side_effect_stale_s: float = 120.0
+    repo_id: uuid.UUID | None = None  # set when the repo's code index can be searched
+    embedder: Embedder | None = None

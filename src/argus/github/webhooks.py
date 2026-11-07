@@ -4,7 +4,7 @@ import hashlib
 import hmac
 from typing import Any
 
-from argus.queue.topics import JOBS_REVIEW
+from argus.queue.topics import JOBS_INDEX, JOBS_REVIEW
 
 SIGNATURE_PREFIX = "sha256="
 
@@ -31,4 +31,15 @@ def route_github_event(event_type: str, payload: dict[str, Any]) -> str | None:
         if pr.get("draft"):
             return None
         return JOBS_REVIEW
+    if event_type == "push":
+        repo = payload.get("repository") or {}
+        branch = repo.get("default_branch")
+        if payload.get("deleted") or not branch or payload.get("ref") != f"refs/heads/{branch}":
+            return None  # only the default branch is indexed
+        return JOBS_INDEX
+    if (event_type, action) in {
+        ("installation", "created"),
+        ("installation_repositories", "added"),
+    }:
+        return JOBS_INDEX
     return None

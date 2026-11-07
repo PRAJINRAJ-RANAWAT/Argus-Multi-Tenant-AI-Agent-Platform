@@ -28,12 +28,17 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr = SecretStr("")
     llm_model: str = "mock-large"
     llm_timeout_s: float = 120.0
+    # Embeddings (OpenAI-compatible /embeddings; defaults to the mock LLM server).
+    embed_base_url: str = ""  # empty = llm_base_url
+    embed_api_key: SecretStr = SecretStr("")
+    embed_model: str = "mock-embed"
 
     # Workers
     worker_id: str = ""
     # Bearer token for /admin endpoints until M4 adds user auth. Empty = admin API off.
     admin_token: SecretStr = SecretStr("")
     worker_concurrency: int = 20
+    index_concurrency: int = 4
 
     def github_private_key_pem(self) -> str:
         if self.github_private_key_path:

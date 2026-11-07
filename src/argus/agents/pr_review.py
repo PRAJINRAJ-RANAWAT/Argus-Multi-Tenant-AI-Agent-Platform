@@ -26,6 +26,7 @@ from argus.mcp_servers.github import build_github_server
 from argus.mcp_servers.github import comment_marker as comment_marker
 from argus.queue.consumer import PermanentError
 from argus.queue.streams import Message
+from argus.rag.embed import Embedder
 from argus.runs import (
     TERMINAL,
     Lease,
@@ -66,6 +67,7 @@ class ReviewDeps:
     redis: Redis
     worker_id: str
     lease_s: float = 30.0  # short: LeaseKeeper renews it every lease_s / 3
+    embedder: Embedder | None = None  # enables search_code over the repo's index
     max_diff_chars: int = 60_000
     side_effect_stale_s: float = 120.0
 
@@ -200,7 +202,7 @@ async def handle_review_message(deps: ReviewDeps, msg: Message) -> None:
         raise PrBusyError(f"PR {pr.repo_full_name}#{pr.number} busy with run {holder}")
     try:
         async with LeaseKeeper(deps.pool, lease, deps.lease_s, also_renew=lock.renew):
-            outcome = await _review(deps, pr, tenant_id, run.id, key, lease)
+            outcome = await _review(deps, pr, tenant_id, repo_id, run.id, key, lease)
     except LeaseLostError:
         raise
     except SupersededError as exc:
@@ -223,6 +225,7 @@ async def _review(
     deps: ReviewDeps,
     pr: PullRequestRef,
     tenant_id: uuid.UUID,
+    repo_id: uuid.UUID,
     run_id: uuid.UUID,
     key: str,
     lease: Lease,
@@ -243,6 +246,8 @@ async def _review(
         head_sha=pr.head_sha,
         max_diff_chars=deps.max_diff_chars,
         side_effect_stale_s=deps.side_effect_stale_s,
+        repo_id=repo_id,
+        embedder=deps.embedder,
     )
 
     async def check_superseded() -> None:

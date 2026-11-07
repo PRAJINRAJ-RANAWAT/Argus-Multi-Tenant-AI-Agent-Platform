@@ -27,6 +27,8 @@ class FakeGitHub:
         default_factory=lambda: {"app.py": "def retry():\n    return 3\n"}
     )
     ci_state: str = "success"
+    head_sha: str = "c" * 40
+    file_reads: list[str] = field(default_factory=list)
     issues: list[dict[str, Any]] = field(default_factory=list)
     fail_diff_with: int | None = None  # HTTP status to return for the next diff fetch
     _ids: Iterator[int] = field(default_factory=lambda: itertools.count(1000))
@@ -54,7 +56,19 @@ class FakeGitHub:
         auth = request.headers.get("authorization", "")
         if not auth.startswith("Bearer ghs_fake_"):
             return httpx.Response(401, json={"message": "Bad credentials"})
+        if re.fullmatch(r"/repos/([^/]+/[^/]+)/git/trees/([^/]+)", path):
+            tree = [
+                {"path": p, "type": "blob", "size": len(c.encode())} for p, c in self.files.items()
+            ]
+            return httpx.Response(200, json={"tree": tree, "truncated": False})
+        if re.fullmatch(r"/repos/([^/]+/[^/]+)/branches/([^/]+)", path):
+            return httpx.Response(200, json={"commit": {"sha": self.head_sha}})
+        if m := re.fullmatch(r"/repos/([^/]+/[^/]+)", path):
+            return httpx.Response(
+                200, json={"full_name": m.group(1), "default_branch": "main", "private": True}
+            )
         if m := re.fullmatch(r"/repos/([^/]+/[^/]+)/contents/(.+)", path):
+            self.file_reads.append(m.group(2))
             content = self.files.get(m.group(2))
             if content is None:
                 return httpx.Response(404, json={"message": "Not Found"})

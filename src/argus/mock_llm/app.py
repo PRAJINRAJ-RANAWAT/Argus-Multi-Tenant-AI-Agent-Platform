@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -26,6 +27,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from argus.rag.embed import hashing_vector
 
 
 class Faults(BaseModel):
@@ -67,7 +70,15 @@ def next_tool_call(
     """The scripted tool call for this turn, as an OpenAI ``tool_calls`` entry, or None."""
     offered = [str((t.get("function") or {}).get("name")) for t in tools]
     if script is None:
-        script = [{"name": "get_pr_diff", "arguments": {}}] if "get_pr_diff" in offered else []
+        if "get_pr_diff" in offered:
+            script = [{"name": "get_pr_diff", "arguments": {}}]
+        elif "search_code" in offered:
+            users = [_text_of(m) for m in messages if m.get("role") == "user"]
+            question = re.sub(r"<[^>]+>", " ", users[-1] if users else "")
+            question = " ".join(question.split()[-40:])
+            script = [{"name": "search_code", "arguments": {"query": question}}]
+        else:
+            script = []
     turn = sum(1 for m in messages if m.get("role") == "tool")
     if turn >= len(script):
         return None
@@ -92,6 +103,11 @@ def canned_completion(messages: list[dict[str, Any]]) -> str:
             "- Check that retries are bounded and use backoff with jitter.\n\n"
             f"_mock review {digest}_"
         )
+    for m in reversed(messages):
+        if m.get("role") == "tool":
+            cite = re.search(r'"citation":\s*"([^"@]+)@', _text_of(m))
+            if cite:
+                return f"The relevant code is in {cite.group(1)} (mock answer {digest})."
     return f"This is a mock answer ({digest})."
 
 
@@ -147,6 +163,30 @@ def create_app(faults: Faults | None = None) -> FastAPI:
     async def set_faults(new: Faults) -> dict[str, Any]:
         state.update(new)
         return state.faults.model_dump()
+
+    @app.post("/v1/embeddings", response_model=None)
+    async def embeddings(request: Request) -> JSONResponse:
+        state.requests += 1
+        body = await request.json()
+        await state.delay()
+        if (err := state.injected_error()) is not None:
+            return err
+        raw = body.get("input") or []
+        texts = [raw] if isinstance(raw, str) else [str(t) for t in raw]
+        return JSONResponse(
+            {
+                "object": "list",
+                "model": str(body.get("model") or "mock-embed"),
+                "data": [
+                    {"object": "embedding", "index": i, "embedding": hashing_vector(t)}
+                    for i, t in enumerate(texts)
+                ],
+                "usage": {
+                    "prompt_tokens": sum(estimate_tokens(t) for t in texts),
+                    "total_tokens": sum(estimate_tokens(t) for t in texts),
+                },
+            }
+        )
 
     @app.post("/v1/chat/completions", response_model=None)
     async def chat(request: Request) -> JSONResponse | StreamingResponse:
