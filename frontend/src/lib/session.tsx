@@ -17,3 +17,8 @@ export function useSession(): Me {
 export function useCan(min: Role): boolean {
   return RANK[useSession().tenant.role] >= RANK[min]
 }
+
+/** Public demo visitor: read-only everywhere, except asking the codebase a question. */
+export function useDemo(): boolean {
+  return !!useSession().demo
+}

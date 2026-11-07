@@ -57,6 +57,7 @@ export interface Me {
   actor: { type: "user" | "api_key"; id: string; github_login: string | null }
   tenant: { login: string; role: Role }
   tenants: { login: string; role: Role }[]
+  demo?: boolean
 }
 
 export interface Citation {
