@@ -104,6 +104,13 @@ async def test_seed_is_realistic(env: Env) -> None:
         DEMO_LOGIN,
     )
     assert 20 <= days <= 28
+    future = await env.pool.fetchval(
+        "SELECT count(*) FROM runs r JOIN tenants t ON t.id = r.tenant_id"
+        " WHERE t.github_account_login = $1"
+        " AND greatest(r.created_at, coalesce(r.finished_at, r.created_at)) > now()",
+        DEMO_LOGIN,
+    )
+    assert future == 0, "nothing in the demo happens in the future"
 
 
 async def test_seed_qa_citations_point_at_indexed_code(env: Env) -> None:

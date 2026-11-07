@@ -304,9 +304,47 @@ QUESTIONS: dict[str, list[tuple[str, str]]] = {
         ("Where is API rate limiting implemented?", "RateLimit"),
     ],
     "northwind/infra": [
-        ("How do I roll back a bad deploy?", ""),
-        ("How long are database backups kept?", ""),
+        ("How do I roll back a bad deploy?", "deploy/README.md"),
+        ("What happens when a change is merged to main?", "deploy/README.md"),
     ],
+}
+
+# The answer to each question; {cite} is the verified citation.
+ANSWERS: dict[str, str] = {
+    "How do we retry failed payment gateway calls?": "Gateway calls go through `retry_with_backoff` ({cite}). A timeout is "
+    "retried up to 5 times with exponential backoff and full jitter; the last failure is "
+    "re-raised so the caller can mark the order as failed.",
+    "Where do we make sure a customer is not charged twice?": "`charge_customer` ({cite}) sends an idempotency key with every charge, "
+    "derived from the order, so a retried request cannot charge the card twice.",
+    "How are webhook signatures from the gateway verified?": "`verify_signature` ({cite}) computes the HMAC-SHA256 of the raw body "
+    "with the shared secret and compares it with `hmac.compare_digest`, so the check is "
+    "constant time. Requests without the header are rejected.",
+    "What happens when an order is cancelled?": "`cancel_order` ({cite}) loads the order, sets its status to `cancelled` "
+    "and commits. It does not refund a captured payment or release reserved stock; both "
+    "would need to happen in the same place.",
+    "How is the cart total calculated?": "`Cart.total` ({cite}) sums `price * quantity` over the items. Prices are "
+    "stored as `Decimal` when added, so the total has no floating-point rounding errors. "
+    "Discounts and tax are not applied here.",
+    "How does the storefront call the backend API?": "Every call goes through `request` ({cite}), which prefixes `/api`, sends "
+    "cookies (`credentials: include`) and throws an `ApiError` with the status and body "
+    "on any non-2xx response.",
+    "How are items added to the cart?": "The `useCart` hook ({cite}) keeps the items in React state. Adding a product "
+    "that is already in the cart increases its quantity instead of adding a second line.",
+    "What stops a customer from submitting checkout twice?": "`CheckoutForm` ({cite}) disables the Place order button while the "
+    "request is in flight and re-enables it in `finally`. That stops double clicks, but not "
+    "a retried request; the server should also be idempotent.",
+    "How does a transfer avoid overdrawing an account?": "`Ledger.Transfer` ({cite}) runs in one database transaction: it reads the "
+    "source balance, returns an error if it is lower than the amount, then writes both "
+    "entries and commits. Any error rolls the whole transfer back.",
+    "Where is API rate limiting implemented?": "`RateLimit` ({cite}) is HTTP middleware with a token bucket per client "
+    "(`rate.Limit` per second, with a burst). Over the limit it answers 429 Too Many "
+    "Requests without calling the handler.",
+    "How do I roll back a bad deploy?": "Re-deploy the previous image tag ({cite}). Merges to main deploy "
+    "automatically: the pipeline builds the image, runs migrations, rolls the services one "
+    "at a time and checks `/healthz`.",
+    "What happens when a change is merged to main?": "It deploys automatically ({cite}): the "
+    "pipeline builds the image, runs the migrations, rolls the services one at a time and "
+    "checks `/healthz` before moving on. To undo it, re-deploy the previous image tag.",
 }
 
 FINDINGS: dict[str, list[tuple[str, str, int, str]]] = {
@@ -492,12 +530,17 @@ def _qa_calls(rng: random.Random) -> Calls:
     return Calls(turns, "claude-sonnet-4-5")
 
 
-def _when(rng: random.Random, day: date) -> datetime:
-    """A working-hours timestamp (Northwind is spread over a few time zones)."""
+def _when(rng: random.Random, day: date, cutoff: datetime) -> datetime:
+    """A working-hours timestamp (Northwind is spread over a few time zones), never later
+    than ``cutoff``. Folding later times back keeps the random sequence, and so the seed,
+    the same whatever the time of day."""
     hour = min(23, max(0, int(rng.gauss(14, 3.5))))
-    return datetime(
+    t = datetime(
         day.year, day.month, day.day, hour, rng.randint(0, 59), rng.randint(0, 59), tzinfo=UTC
     )
+    if t > cutoff:
+        t = cutoff - timedelta(seconds=(t - cutoff).total_seconds() % 14_400)
+    return t
 
 
 def _sha(rng: random.Random) -> str:
@@ -570,7 +613,11 @@ async def seed_demo(
 ) -> dict[str, Any]:
     """Create or refresh the demo tenant. Returns a summary of what was written."""
     rng = random.Random(SEED)
-    today = today or datetime.now(UTC).date()
+    now = datetime.now(UTC)
+    if today is None or today == now.date():
+        today, cutoff = now.date(), now - timedelta(minutes=10)
+    else:
+        cutoff = datetime(today.year, today.month, today.day, 23, 59, tzinfo=UTC)
     start = today - timedelta(days=DAYS - 1)
     tenant_id = await upsert_tenant(pool, DEMO_INSTALLATION, DEMO_LOGIN)
     await _wipe(pool, tenant_id)
@@ -661,7 +708,7 @@ async def seed_demo(
             pr_counter[name] += rng.choice([0, 1, 1, 2])
             pr = pr_counter[name]
             head = _sha(rng)
-            created = _when(rng, day)
+            created = _when(rng, day, cutoff)
             run_id = uuid.UUID(int=rng.getrandbits(128))
             c = _review_calls(rng)
             dur = _lognormal(rng, 72, 0.45, 24, 300)
@@ -775,15 +822,15 @@ async def seed_demo(
             name = rng.choices(list(REPOS), weights=[4, 2, 2, 1])[0]
             repo_id, sha = repos[name]
             question, symbol = rng.choice(QUESTIONS[name])
-            created = _when(rng, day)
+            created = _when(rng, day, cutoff)
             run_id = uuid.UUID(int=rng.getrandbits(128))
             c = _qa_calls(rng)
             dur = _lognormal(rng, 11, 0.4, 4, 40)
             started = created + timedelta(seconds=rng.uniform(0.2, 1.5))
             finished = started + timedelta(seconds=dur)
-            hit = symbols.get((name, symbol)) if symbol else None
-            if hit is None:
-                hit = paths[name][0] if paths.get(name) else None
+            hit = symbols.get((name, symbol))
+            if hit is None:  # a whole file, cited from its first to its last line
+                hit = next((x for x in paths.get(name, []) if x[0] == symbol), None)
             citations = []
             answer = "I could not find this in the indexed code."
             if hit:
@@ -797,14 +844,7 @@ async def seed_demo(
                         "url": f"https://github.com/{name}/blob/{sha}/{path}#L{s}-L{e}",
                     }
                 ]
-                answer = f"It is handled in `{symbol or path}` ({cite}). " + {
-                    "retry_with_backoff": "Timeouts are retried up to 5 times with "
-                    "exponential backoff and full jitter; the last failure is re-raised.",
-                    "charge_customer": "Every charge carries an idempotency key derived "
-                    "from the order, so a retried request cannot charge twice.",
-                    "verify_signature": "The HMAC-SHA256 of the raw body is compared "
-                    "with `hmac.compare_digest`, so the check is constant time.",
-                }.get(symbol, "The relevant logic is in the cited lines.")
+                answer = ANSWERS[question].format(cite=cite)
             result = {
                 "answer": answer,
                 "citations": citations,
