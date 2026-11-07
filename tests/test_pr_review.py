@@ -458,6 +458,15 @@ async def test_tools_outside_the_allowlist_are_denied_and_audited(env: Env) -> N
     assert env.gh.issues == []
     [comment] = env.comments()  # only the runtime's own review comment
     assert "spam" not in comment["body"]
+    audited = await env.pool.fetch(
+        "SELECT target, decision, details::text AS d FROM audit_log WHERE action = 'tool.call'"
+        " ORDER BY id"
+    )
+    assert [(a["target"], a["decision"]) for a in audited][:3] == [
+        ("open_issue", "deny"),
+        ("post_review_comment", "deny"),
+        ("delete_repo", "deny"),
+    ]
 
 
 async def test_path_traversal_and_missing_files_are_tool_errors(env: Env) -> None:

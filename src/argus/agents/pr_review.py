@@ -16,7 +16,7 @@ from typing import Any
 import asyncpg
 from redis.asyncio import Redis
 
-from argus.agents.toolloop import run_tool_loop
+from argus.agents.toolloop import audit_hook, run_tool_loop
 from argus.github.client import GitHubClient
 from argus.llm.client import LLMClient
 from argus.locks import OwnedLock, pr_lock_key
@@ -258,7 +258,12 @@ async def _review(
     servers = [build_code_server(ctx), build_github_server(ctx)]
     async with ToolHub(servers, POLICIES[AGENT_TYPE]) as hub:
         final = await run_tool_loop(
-            steps, deps.llm, hub, build_messages(pr), between_steps=check_superseded
+            steps,
+            deps.llm,
+            hub,
+            build_messages(pr),
+            between_steps=check_superseded,
+            on_tool_decision=audit_hook(deps.pool, tenant_id, AGENT_TYPE, run_id),
         )
         body = render_comment(final.get("content") or "", pr)
 

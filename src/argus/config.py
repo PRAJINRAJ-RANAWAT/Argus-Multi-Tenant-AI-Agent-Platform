@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     github_private_key_path: str = ""
     github_api_url: str = "https://api.github.com"
 
+    # GitHub OAuth (user login). The GitHub App's client id/secret.
+    github_web_url: str = "https://github.com"
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: SecretStr = SecretStr("")
+    public_url: str = "http://localhost:8000"  # where users reach the API (OAuth callback)
+    session_ttl_s: int = 7 * 24 * 3600
+    cookie_secure: bool = True
+    repo_permission_cache_s: int = 300
+
     # LLM (OpenAI-compatible endpoint; the mock LLM in dev/tests)
     llm_base_url: str = "http://localhost:8090/v1"
     llm_api_key: SecretStr = SecretStr("")
@@ -35,7 +44,7 @@ class Settings(BaseSettings):
 
     # Workers
     worker_id: str = ""
-    # Bearer token for /admin endpoints until M4 adds user auth. Empty = admin API off.
+    # Bearer token for operator endpoints (/admin: DLQ). Empty = admin API off.
     admin_token: SecretStr = SecretStr("")
     worker_concurrency: int = 20
     index_concurrency: int = 4

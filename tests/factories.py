@@ -104,3 +104,25 @@ def installation_payload(
         ],
         "sender": {"login": "octocat", "id": 1},
     }
+
+
+async def make_api_key(
+    pool: Any, tenant_id: Any, *, role: str = "member", repo_ids: list[Any] | None = None
+) -> str:
+    """Insert an API key directly (as the system role) and return its token."""
+    import secrets
+
+    from argus.auth.apikeys import hash_key
+
+    prefix = secrets.token_hex(4)
+    token = f"argus_{prefix}_{secrets.token_urlsafe(32)}"
+    await pool.execute(
+        "INSERT INTO api_keys (tenant_id, name, prefix, key_hash, role, repo_ids)"
+        " VALUES ($1, 'test', $2, $3, $4, $5)",
+        tenant_id,
+        prefix,
+        hash_key(token),
+        role,
+        repo_ids,
+    )
+    return token

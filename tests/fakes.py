@@ -29,6 +29,12 @@ class FakeGitHub:
     ci_state: str = "success"
     head_sha: str = "c" * 40
     file_reads: list[str] = field(default_factory=list)
+    # OAuth: code -> user {"id", "login", "name", "installations": [(id, login, type)],
+    # "org_roles": {org: role}}; user tokens are "gho_<login>".
+    oauth_codes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    oauth_users: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # (repo full name, login) -> admin / write / read / none
+    repo_permissions: dict[tuple[str, str], str] = field(default_factory=dict)
     issues: list[dict[str, Any]] = field(default_factory=list)
     fail_diff_with: int | None = None  # HTTP status to return for the next diff fetch
     _ids: Iterator[int] = field(default_factory=lambda: itertools.count(1000))
@@ -53,9 +59,37 @@ class FakeGitHub:
                     "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 },
             )
+        if path == "/login/oauth/access_token":
+            code = dict(httpx.QueryParams(request.content.decode())).get("code", "")
+            user = self.oauth_codes.pop(code, None)
+            if user is None:
+                return httpx.Response(200, json={"error": "bad_verification_code"})
+            self.oauth_users[user["login"]] = user
+            return httpx.Response(200, json={"access_token": f"gho_{user['login']}"})
         auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer gho_"):
+            user = self.oauth_users.get(auth.removeprefix("Bearer gho_"))
+            if user is None:
+                return httpx.Response(401, json={"message": "Bad credentials"})
+            if path == "/user":
+                return httpx.Response(200, json={k: user[k] for k in ("id", "login", "name")})
+            if path == "/user/installations":
+                items = [
+                    {"id": i, "account": {"login": a, "type": t}}
+                    for i, a, t in user["installations"]
+                ]
+                return httpx.Response(200, json={"installations": items})
+            if m := re.fullmatch(r"/user/memberships/orgs/([^/]+)", path):
+                role = user.get("org_roles", {}).get(m.group(1))
+                if role is None:
+                    return httpx.Response(404, json={"message": "Not Found"})
+                return httpx.Response(200, json={"role": role, "state": "active"})
+            return httpx.Response(404, json={"message": "fake: no user route"})
         if not auth.startswith("Bearer ghs_fake_"):
             return httpx.Response(401, json={"message": "Bad credentials"})
+        if m := re.fullmatch(r"/repos/([^/]+/[^/]+)/collaborators/([^/]+)/permission", path):
+            perm = self.repo_permissions.get((m.group(1), m.group(2)), "none")
+            return httpx.Response(200, json={"permission": perm, "role_name": perm})
         if re.fullmatch(r"/repos/([^/]+/[^/]+)/git/trees/([^/]+)", path):
             tree = [
                 {"path": p, "type": "blob", "size": len(c.encode())} for p, c in self.files.items()

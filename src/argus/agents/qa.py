@@ -16,7 +16,7 @@ from typing import Any
 
 import asyncpg
 
-from argus.agents.toolloop import run_tool_loop, wrap_untrusted
+from argus.agents.toolloop import audit_hook, run_tool_loop, wrap_untrusted
 from argus.github.client import GitHubClient
 from argus.llm.client import LLMClient
 from argus.mcp_servers import RunContext
@@ -68,51 +68,47 @@ class QAError(Exception):
 
 
 async def create_qa_run(
-    pool: asyncpg.Pool,
+    conn: asyncpg.Connection,
     *,
-    repo_full_name: str,
+    tenant_id: uuid.UUID,
+    repo_id: uuid.UUID,
     question: str,
     requested_by: str,
     idempotency_key: str | None = None,
 ) -> tuple[uuid.UUID, bool]:
-    """Create the run and its queue message atomically. Returns (run_id, created)."""
+    """Create the run and its queue message in the caller's transaction (a tenant-scoped
+    one in the API, so row-level security applies). Returns (run_id, created)."""
     question = question.strip()
     if not question or len(question) > MAX_QUESTION_CHARS:
         raise QAError(f"question must be 1-{MAX_QUESTION_CHARS} characters")
-    key = f"qa:{idempotency_key or uuid.uuid4()}"
-    async with pool.acquire() as conn, conn.transaction():
-        repo = await conn.fetchrow(
-            "SELECT id, tenant_id FROM repos WHERE full_name = $1", repo_full_name
-        )
-        if repo is None:
-            raise QAError(f"unknown repository {repo_full_name}")
-        run_id = await conn.fetchval(
-            """
-            INSERT INTO runs (tenant_id, repo_id, agent_type, idempotency_key, input,
-                              requested_by)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6)
-            ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
-            RETURNING id
-            """,
-            repo["tenant_id"],
-            repo["id"],
-            AGENT_TYPE,
+    key = f"qa:{requested_by}:{idempotency_key or uuid.uuid4()}"
+    run_id = await conn.fetchval(
+        """
+        INSERT INTO runs (tenant_id, repo_id, agent_type, idempotency_key, input,
+                          requested_by)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+        RETURNING id
+        """,
+        tenant_id,
+        repo_id,
+        AGENT_TYPE,
+        key,
+        json.dumps({"question": question}),
+        requested_by,
+    )
+    if run_id is None:
+        existing: uuid.UUID = await conn.fetchval(
+            "SELECT id FROM runs WHERE tenant_id = $1 AND idempotency_key = $2",
+            tenant_id,
             key,
-            json.dumps({"question": question}),
-            requested_by,
         )
-        if run_id is None:
-            existing: uuid.UUID = await conn.fetchval(
-                "SELECT id FROM runs WHERE tenant_id = $1 AND idempotency_key = $2",
-                repo["tenant_id"],
-                key,
-            )
-            return existing, False
-        await conn.execute(
-            "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",
-            JOBS_QA,
-            json.dumps({"run_id": str(run_id)}),
-        )
+        return existing, False
+    await conn.execute(
+        "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",
+        JOBS_QA,
+        json.dumps({"run_id": str(run_id)}),
+    )
     return run_id, True
 
 
@@ -200,7 +196,11 @@ async def handle_qa_message(deps: QADeps, msg: Message) -> None:
             steps = StepRunner(deps.pool, lease)
             async with ToolHub([build_code_server(ctx)], POLICIES[AGENT_TYPE]) as hub:
                 final = await run_tool_loop(
-                    steps, deps.llm, hub, build_messages(run["full_name"], question)
+                    steps,
+                    deps.llm,
+                    hub,
+                    build_messages(run["full_name"], question),
+                    on_tool_decision=audit_hook(deps.pool, run["tenant_id"], AGENT_TYPE, run_id),
                 )
             answer = str(final.get("content") or "").strip()
             verified, unverified = await verify_citations(

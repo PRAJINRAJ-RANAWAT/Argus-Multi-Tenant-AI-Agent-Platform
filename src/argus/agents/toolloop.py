@@ -9,14 +9,40 @@ Tool output is wrapped as untrusted data before it re-enters the conversation.
 
 import json
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import asyncpg
+
+from argus.auth import audit
 from argus.llm.client import LLMClient
 from argus.steps import StepOutcome, StepRunner
 from argus.tools.hub import ToolDeniedError, ToolHub
 
 log = logging.getLogger("argus.agents.toolloop")
+
+# (tool name, arguments, "allow" | "deny"); used to write the audit log. Called inside the
+# step, so a replayed step does not audit twice.
+ToolDecisionHook = Callable[[str, dict[str, Any], str], Awaitable[None]]
+
+
+def audit_hook(
+    pool: asyncpg.Pool, tenant_id: uuid.UUID, agent: str, run_id: uuid.UUID
+) -> ToolDecisionHook:
+    async def hook(name: str, args: dict[str, Any], decision: str) -> None:
+        await audit(
+            pool,
+            tenant_id,
+            actor_type="agent",
+            actor_id=f"{agent}:{run_id}",
+            action="tool.call",
+            target=name,
+            decision=decision,
+            details={"args": args},
+        )
+
+    return hook
 
 
 def wrap_untrusted(source: str, text: str) -> str:
@@ -31,6 +57,7 @@ async def run_tool_loop(
     *,
     between_steps: Callable[[], Awaitable[None]] | None = None,
     max_tokens: int = 1024,
+    on_tool_decision: ToolDecisionHook | None = None,
 ) -> dict[str, Any]:
     """Run until the model answers without tool calls. Returns that final LLM output
     (``content``, ``model``). Bounded by the run's step and token budgets."""
@@ -83,12 +110,17 @@ async def run_tool_loop(
 
             async def call_tool(name: str = name, args: dict[str, Any] = args) -> StepOutcome:
                 try:
-                    out = await hub.call(name, args, by_model=True)
+                    hub.check(name, by_model=True)
                 except ToolDeniedError as exc:
                     log.warning("tool denied", extra={"tool": name, "reason": str(exc)})
+                    if on_tool_decision is not None:
+                        await on_tool_decision(name, args, "deny")
                     return StepOutcome(
                         output={"text": f"error: {exc}", "is_error": True, "denied": True}
                     )
+                if on_tool_decision is not None:
+                    await on_tool_decision(name, args, "allow")
+                out = await hub.call(name, args, by_model=True)
                 return StepOutcome(output={"text": out.text, "is_error": out.is_error})
 
             result: dict[str, Any] = await steps.step("tool_call", name, args, call_tool)

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus runs</title>
+<style>
+  :root { --bg:#fbfbfa; --fg:#1d1d1b; --muted:#6b6b66; --line:#e4e3df; --ok:#1f7a4d;
+          --bad:#b3261e; --run:#2b5fb3; --wait:#8a6d1f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --fg:#ecebe7; --muted:#9a9993; --line:#2c2c2a; --ok:#5cc28c;
+            --bad:#f08a80; --run:#7fa8f0; --wait:#d9b860; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; gap:16px; align-items:center; padding:16px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; }
+  header .who { margin-left:auto; color:var(--muted); }
+  main { padding:16px; max-width:1100px; margin:0 auto; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; }
+  td.repo { white-space:normal; }
+  .s { font-weight:600; }
+  .succeeded { color:var(--ok); } .failed { color:var(--bad); } .running { color:var(--run); }
+  .queued, .waiting_approval { color:var(--wait); } .superseded, .cancelled { color:var(--muted); }
+  .live { font-size:12px; color:var(--muted); }
+  a.button { border:1px solid var(--line); padding:6px 12px; border-radius:6px; color:inherit;
+             text-decoration:none; }
+  .wrap { overflow-x:auto; }
+  #msg { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Argus</h1><span class="live" id="live">offline</span>
+  <span class="who" id="who"></span>
+</header>
+<main>
+  <p id="msg">Loading…</p>
+  <div class="wrap">
+    <table id="runs" hidden>
+      <thead><tr><th>Status</th><th>Agent</th><th>Repository</th><th>PR</th><th>Steps</th>
+        <th>Tokens</th><th>Created</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</main>
+<script>
+const tbody = document.querySelector("#runs tbody");
+const rows = new Map();
+
+function cell(text, cls) {
+  const td = document.createElement("td");
+  td.textContent = text == null ? "" : String(text);
+  if (cls) td.className = cls;
+  return td;
+}
+
+function render(run) {
+  let tr = rows.get(run.id);
+  if (!tr) {
+    tr = document.createElement("tr");
+    rows.set(run.id, tr);
+    tbody.prepend(tr);
+  }
+  tr.replaceChildren(
+    cell(run.status, "s " + run.status),
+    cell(run.agent_type),
+    cell(run.repo || "", "repo"),
+    cell(run.pr_number ? "#" + run.pr_number : ""),
+    cell(run.steps ?? ""),
+    cell(run.tokens ? run.tokens.input + run.tokens.output : ""),
+    cell(run.created_at ? new Date(run.created_at).toLocaleString() : ""),
+  );
+}
+
+async function load() {
+  const me = await fetch("/api/me", { credentials: "same-origin" });
+  if (me.status === 401) {
+    document.getElementById("msg").innerHTML =
+      '<a class="button" href="/auth/github/login?next=/dashboard">Sign in with GitHub</a>';
+    return false;
+  }
+  const who = await me.json();
+  document.getElementById("who").textContent =
+    `${who.actor.github_login || who.actor.type} · ${who.tenant.login} (${who.tenant.role})`;
+  const res = await fetch("/api/runs?limit=100", { credentials: "same-origin" });
+  const data = await res.json();
+  tbody.replaceChildren();
+  rows.clear();
+  data.runs.slice().reverse().forEach(render);
+  document.getElementById("runs").hidden = false;
+  document.getElementById("msg").textContent = data.runs.length ? "" : "No runs yet.";
+  return true;
+}
+
+async function refreshRun(id) {
+  const res = await fetch(`/api/runs/${id}`, { credentials: "same-origin" });
+  if (res.ok) render(await res.json());
+}
+
+function connect() {
+  const live = document.getElementById("live");
+  const es = new EventSource("/api/runs/stream");
+  es.onopen = () => { live.textContent = "live"; };
+  es.addEventListener("run", (e) => refreshRun(JSON.parse(e.data).run_id));
+  es.onerror = () => { live.textContent = "reconnecting…"; };
+}
+
+load().then((ok) => { if (ok) connect(); });
+</script>
+</body>
+</html>

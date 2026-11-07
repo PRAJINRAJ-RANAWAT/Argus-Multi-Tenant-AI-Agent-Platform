@@ -1,7 +1,7 @@
 """Common FastAPI app factory: lifespan-managed Postgres pool and Redis client."""
 
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 from fastapi import FastAPI
 from redis.asyncio import Redis
@@ -18,15 +18,21 @@ def build_app(
     *,
     title: str,
     configure: Callable[[FastAPI], None] | None = None,
+    extra_lifespan: Callable[[Resources], AbstractAsyncContextManager[None]] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(settings.service_name, settings.log_level)
         pool = await create_pool(settings.database_url)
         redis = Redis.from_url(settings.redis_url, decode_responses=True)
-        app.state.resources = Resources(settings=settings, db=pool, redis=redis)
+        resources = Resources(settings=settings, db=pool, redis=redis)
+        app.state.resources = resources
         try:
-            yield
+            if extra_lifespan is None:
+                yield
+            else:
+                async with extra_lifespan(resources):
+                    yield
         finally:
             await redis.aclose()
             await pool.close()

@@ -127,8 +127,9 @@ class StepRunner:
         # never overwritten (WHERE on the DO UPDATE).
         tag = await self.pool.execute(
             """
-            INSERT INTO run_steps (run_id, seq, kind, name, input_hash, input, lease_version)
-            SELECT r.id, $3, $4, $5, $6, $7::jsonb, r.lease_version
+            INSERT INTO run_steps (run_id, seq, kind, name, input_hash, input, lease_version,
+                                   tenant_id)
+            SELECT r.id, $3, $4, $5, $6, $7::jsonb, r.lease_version, r.tenant_id
             FROM runs r WHERE r.id = $1 AND r.lease_version = $2 AND r.status = 'running'
             ON CONFLICT (run_id, seq) DO UPDATE
             SET status = 'started', lease_version = EXCLUDED.lease_version, error = NULL,
