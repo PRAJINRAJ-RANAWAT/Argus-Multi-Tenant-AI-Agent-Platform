@@ -17,16 +17,21 @@ COOKIE = "argus_session"
 class Session:
     user_id: uuid.UUID
     github_login: str
+    demo: bool = False  # public read-only demo visitor
 
 
 def _key(session_id: str) -> str:
     return "session:" + hashlib.sha256(session_id.encode()).hexdigest()
 
 
-async def create_session(redis: Redis, user_id: uuid.UUID, login: str, ttl_s: int) -> str:
+async def create_session(
+    redis: Redis, user_id: uuid.UUID, login: str, ttl_s: int, *, demo: bool = False
+) -> str:
     session_id = secrets.token_urlsafe(32)
     await redis.set(
-        _key(session_id), json.dumps({"user_id": str(user_id), "login": login}), ex=ttl_s
+        _key(session_id),
+        json.dumps({"user_id": str(user_id), "login": login, "demo": demo}),
+        ex=ttl_s,
     )
     return session_id
 
@@ -38,7 +43,7 @@ async def get_session(redis: Redis, session_id: str) -> Session | None:
     if raw is None:
         return None
     data = json.loads(raw)
-    return Session(uuid.UUID(data["user_id"]), data["login"])
+    return Session(uuid.UUID(data["user_id"]), data["login"], bool(data.get("demo", False)))
 
 
 async def delete_session(redis: Redis, session_id: str) -> None:

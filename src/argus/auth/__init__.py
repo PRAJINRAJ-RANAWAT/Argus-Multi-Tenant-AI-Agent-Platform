@@ -47,6 +47,7 @@ class Principal:
     github_login: str | None = None
     api_key_id: uuid.UUID | None = None
     repo_ids: frozenset[uuid.UUID] | None = None  # API keys may be limited to repos
+    demo: bool = False  # public demo visitor: read-only, pinned to the demo tenant
 
     @property
     def actor_type(self) -> str:
