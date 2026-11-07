@@ -225,3 +225,129 @@
     transform: none;
   }
 }
+
+/* --- Landing page ------------------------------------------------------------------ */
+
+:root {
+  --grid-line: color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+
+html.lenis, html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+.lenis.lenis-stopped {
+  overflow: hidden;
+}
+
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+.marquee {
+  animation: marquee 40s linear infinite;
+}
+.marquee:hover {
+  animation-play-state: paused;
+}
+
+/* Architecture diagram. Groups light up as the matching callout scrolls into view. */
+.arch {
+  font-family: var(--font-mono);
+}
+.arch-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--foreground) 45%, transparent);
+  stroke-width: 1.5;
+  transition: stroke 300ms ease, stroke-width 300ms ease;
+}
+.arch-arrow {
+  fill: color-mix(in srgb, var(--foreground) 55%, transparent);
+}
+.arch-edge-label {
+  font-size: 11px;
+  fill: var(--muted-foreground);
+  transition: fill 300ms ease;
+}
+.arch-edge-group[data-on="true"] .arch-edge {
+  stroke: var(--foreground);
+  stroke-width: 2.5;
+}
+.arch-edge-group[data-on="true"] .arch-edge-label {
+  fill: var(--foreground);
+  font-weight: 700;
+}
+.arch-node-box {
+  fill: var(--card);
+  stroke: var(--border);
+  stroke-width: 1.5;
+  transition: fill 300ms ease;
+}
+.arch-node-shadow {
+  fill: var(--shadow-ink);
+  opacity: 0.9;
+  transition: fill 300ms ease;
+}
+.arch-node[data-external] .arch-node-box {
+  fill: var(--muted);
+  stroke-dasharray: 5 4;
+}
+.arch-node[data-external] .arch-node-shadow {
+  opacity: 0;
+}
+.arch-node-title {
+  font-family: var(--font-heading);
+  font-size: 15px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+  fill: var(--foreground);
+}
+.arch-node-line {
+  font-size: 11.5px;
+  fill: var(--muted-foreground);
+}
+.arch-node[data-on="true"] .arch-node-box {
+  fill: var(--neon);
+}
+.arch-node[data-on="true"] .arch-node-title,
+.arch-node[data-on="true"] .arch-node-line {
+  fill: #1b1b1b;
+}
+.arch-otel rect {
+  fill: none;
+  stroke: var(--muted-foreground);
+  stroke-dasharray: 3 4;
+}
+.arch-otel text {
+  font-size: 12px;
+  fill: var(--muted-foreground);
+  letter-spacing: 0.04em;
+}
+.arch-packet {
+  fill: var(--neon);
+  stroke: #1b1b1b;
+  stroke-width: 1.5;
+}
+@media (prefers-reduced-motion: reduce) {
+  .arch-packet {
+    display: none;
+  }
+}
+
+/* The neon highlight behind the hero's last phrase; wraps cleanly across lines. */
+.hero-mark {
+  background-image: linear-gradient(var(--neon), var(--neon));
+  background-repeat: no-repeat;
+  background-position: 0 88%;
+  background-size: 100% 0.38em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  padding: 0 0.04em;
+}
+html, body {
+  overflow-x: clip;
+}

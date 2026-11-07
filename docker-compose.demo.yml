@@ -44,6 +44,7 @@ services:
       ARGUS_COOKIE_SECURE: "false"
       ARGUS_PUBLIC_URL: http://localhost:8000
       ARGUS_ADMIN_TOKEN: demo-admin-token
+      ARGUS_DEMO_TENANT: northwind  # public read-only demo at /demo (seeded by seed-demo)
     volumes: ["demo-keys:/keys:ro"]
     depends_on:
       dev-keys:
@@ -60,6 +61,21 @@ services:
       dev-keys:
         condition: service_completed_successfully
       fake-github:
+        condition: service_started
+
+  # One-shot: creates or refreshes the public demo tenant "northwind" (idempotent).
+  seed-demo:
+    image: argus:dev
+    environment:
+      ARGUS_ENV: dev
+      ARGUS_DATABASE_URL: postgresql://argus:argus@postgres:5432/argus
+      ARGUS_LLM_BASE_URL: http://mock-llm:8000/v1
+    command: ["argus-seed-demo"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-llm:
         condition: service_started
 
 volumes:

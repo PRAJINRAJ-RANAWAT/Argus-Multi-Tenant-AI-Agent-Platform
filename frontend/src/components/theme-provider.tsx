@@ -13,12 +13,12 @@ type ThemeContextValue = {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
 
-function readStored(): Theme {
+function readStored(fallback: Theme): Theme {
   try {
     const v = localStorage.getItem(THEME_KEY)
-    return v === "light" || v === "dark" || v === "system" ? v : "system"
+    return v === "light" || v === "dark" || v === "system" ? v : fallback
   } catch {
-    return "system" // storage blocked (private mode, sandbox): fall back to the system
+    return fallback // storage blocked (private mode, sandbox): use the page default
   }
 }
 
@@ -35,8 +35,15 @@ function apply(resolved: Resolved, animate: boolean) {
 
 /** Light, dark or system theme, persisted per browser. The inline script in
  *  index.html applies the same choice before first paint, so there is no flash. */
-export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(readStored)
+export function ThemeProvider({
+  children,
+  defaultTheme = "system",
+}: {
+  children: React.ReactNode
+  /** Used until the visitor picks a theme (the landing page is dark-first). */
+  defaultTheme?: Theme
+}) {
+  const [theme, setThemeState] = useState<Theme>(() => readStored(defaultTheme))
   const [system, setSystem] = useState<Resolved>(() => (systemDark() ? "dark" : "light"))
   const resolved: Resolved = theme === "system" ? system : theme
 

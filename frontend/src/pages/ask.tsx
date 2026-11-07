@@ -1,7 +1,14 @@
 import { useState } from "react"
 import { useNavigate } from "react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CornerDownLeft, ExternalLink, FolderGit2, Loader2, MessageSquareCode } from "lucide-react"
+import {
+  CornerDownLeft,
+  ExternalLink,
+  FolderGit2,
+  Hourglass,
+  Loader2,
+  MessageSquareCode,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { Markdown } from "@/components/markdown"
@@ -23,13 +30,13 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
-import { api } from "@/lib/api"
+import { ApiError, api } from "@/lib/api"
 import { compact, timeAgo } from "@/lib/format"
 
 const EXAMPLES = [
-  "How do we retry failed calls with backoff?",
-  "Where are webhook signatures verified?",
-  "What calls charge_customer?",
+  "How do we retry failed payment gateway calls?",
+  "Where do we make sure a customer is not charged twice?",
+  "How are webhook signatures verified?",
 ]
 const TERMINAL = new Set(["succeeded", "failed", "cancelled", "superseded"])
 
@@ -49,13 +56,19 @@ export function AskPage() {
   const fallback = (repos.data?.repos.find((r) => r.chunks > 0) ?? repos.data?.repos[0])?.full_name ?? ""
   const repo = picked || fallback
 
+  const [limit, setLimit] = useState<string | null>(null)
   const ask = useMutation({
     mutationFn: () => api.ask(repo, question.trim()),
     onSuccess: (res) => {
+      setLimit(null)
       setRunId(res.run_id)
       qc.invalidateQueries({ queryKey: ["runs"] })
     },
-    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not ask"),
+    onError: (e) => {
+      // Demo limits come back as 429 with a friendly explanation: show it in place.
+      if (e instanceof ApiError && e.status === 429) setLimit(e.message)
+      else toast.error(e instanceof Error ? e.message : "Could not ask")
+    },
   })
 
   const run = useQuery({
@@ -148,6 +161,15 @@ export function AskPage() {
                   className="resize-none border-[1.5px] border-border bg-background text-sm"
                 />
               </div>
+              {limit && (
+                <div
+                  role="status"
+                  className="flex items-start gap-3 rounded-md border-[1.5px] border-border bg-neon/15 p-3 text-sm"
+                >
+                  <Hourglass className="mt-0.5 size-4 shrink-0" />
+                  <p>{limit}</p>
+                </div>
+              )}
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap gap-1.5">
                   {EXAMPLES.map((ex) => (

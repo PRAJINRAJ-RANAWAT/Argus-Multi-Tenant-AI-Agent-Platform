@@ -8,6 +8,8 @@
 .env.*
 node_modules
 docs
+!docs/load-and-chaos-report.md
+!docs/adr
 tests
 frontend/node_modules
 src/argus/api/web

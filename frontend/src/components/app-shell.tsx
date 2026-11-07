@@ -44,7 +44,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useRunStream, type StreamState } from "@/hooks/use-run-stream"
 import { api, setTenantCookie } from "@/lib/api"
 import { NAV } from "@/lib/nav"
-import { useCan, useSession } from "@/lib/session"
+import { useCan, useDemo, useSession } from "@/lib/session"
 import { cn } from "@/lib/utils"
 
 function Logo() {
@@ -74,8 +74,11 @@ function NavItems() {
   const pendingCount = pending.data?.approvals.length ?? 0
   const canMember = useCan("member")
   const canAdmin = useCan("admin")
-  const allowed = (min: string) =>
-    min === "viewer" || (min === "member" && canMember) || (min === "admin" && canAdmin)
+  const demo = useDemo()
+  const allowed = (min: string, to?: string) =>
+    min === "viewer" ||
+    (min === "member" && (canMember || (demo && to === "/ask"))) ||
+    (min === "admin" && canAdmin)
 
   return (
     <>
@@ -84,7 +87,7 @@ function NavItems() {
           <SidebarGroupLabel className="eyebrow text-[10px]">{section.group}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {section.items.filter((i) => allowed(i.min)).map((item) => (
+              {section.items.filter((i) => allowed(i.min, i.to)).map((item) => (
                 <SidebarMenuItem key={item.to}>
                   <SidebarMenuButton
                     asChild
@@ -197,6 +200,25 @@ function LiveIndicator({ state }: { state: StreamState }) {
   )
 }
 
+function DemoBanner() {
+  return (
+    <div
+      role="note"
+      className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b-[1.5px] border-border bg-neon px-4 py-1.5 text-center text-neon-foreground"
+    >
+      <span className="font-mono text-[11px] font-bold uppercase tracking-[0.18em]">
+        Demo mode: read-only
+      </span>
+      <span className="text-xs">
+        Sample data for a fictional team. Explore freely; ask the code a question.
+      </span>
+      <a href="/" className="text-xs font-semibold underline underline-offset-2">
+        Back to the site
+      </a>
+    </div>
+  )
+}
+
 const TITLES: Record<string, string> = Object.fromEntries(
   NAV.flatMap((s) => s.items).map((i) => [i.to, i.label]),
 )
@@ -232,6 +254,7 @@ export function AppShell() {
         <SidebarRail />
       </Sidebar>
       <SidebarInset className="min-w-0">
+        {me.demo && <DemoBanner />}
         <header className="sticky top-0 z-20 flex h-14 items-center gap-2 border-b-[1.5px] border-border bg-background/85 px-3 backdrop-blur sm:px-4">
           <SidebarTrigger className="-ml-1" />
           <Breadcrumb className="min-w-0">

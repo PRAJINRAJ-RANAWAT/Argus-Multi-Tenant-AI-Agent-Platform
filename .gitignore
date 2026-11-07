@@ -44,3 +44,4 @@ pnpm-debug.log*
 # Frontend
 node_modules/
 src/argus/api/web/
+frontend/src/landing/proof.generated.json

@@ -7,6 +7,11 @@ WORKDIR /web/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 COPY frontend ./
+# The landing page's "proof in numbers" is read from these reports at build time.
+COPY evals/baseline.json /web/evals/baseline.json
+COPY evals/reports /web/evals/reports
+COPY docs/load-and-chaos-report.md /web/docs/load-and-chaos-report.md
+COPY docs/adr /web/docs/adr
 RUN npm run build
 
 FROM python:3.12-slim AS builder

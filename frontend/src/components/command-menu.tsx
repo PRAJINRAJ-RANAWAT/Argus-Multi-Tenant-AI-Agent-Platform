@@ -18,7 +18,7 @@ import {
 import { api } from "@/lib/api"
 import { AGENT_LABEL } from "@/lib/format"
 import { NAV } from "@/lib/nav"
-import { useCan } from "@/lib/session"
+import { useCan, useDemo } from "@/lib/session"
 
 /** ⌘K / Ctrl+K: jump to a page, search runs by repository or question, switch theme. */
 export function CommandMenu({
@@ -34,6 +34,7 @@ export function CommandMenu({
   const [debounced, setDebounced] = useState("")
   const canMember = useCan("member")
   const canAdmin = useCan("admin")
+  const demo = useDemo()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -62,8 +63,10 @@ export function CommandMenu({
     setQuery("")
     navigate(to)
   }
-  const allowed = (min: string) =>
-    min === "viewer" || (min === "member" && canMember) || (min === "admin" && canAdmin)
+  const allowed = (min: string, to?: string) =>
+    min === "viewer" ||
+    (min === "member" && (canMember || (demo && to === "/ask"))) ||
+    (min === "admin" && canAdmin)
 
   return (
     <CommandDialog
@@ -100,7 +103,7 @@ export function CommandMenu({
         )}
         {NAV.map((section) => (
           <CommandGroup key={section.group} heading={section.group}>
-            {section.items.filter((i) => allowed(i.min)).map((item) => (
+            {section.items.filter((i) => allowed(i.min, i.to)).map((item) => (
               <CommandItem
                 key={item.to}
                 value={`${item.label} ${item.keywords ?? ""}`}

@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     public_url: str = "http://localhost:8000"  # where users reach the API (OAuth callback)
     session_ttl_s: int = 7 * 24 * 3600
     cookie_secure: bool = True
+    # Public read-only demo: /demo signs visitors into this tenant (GitHub account login of
+    # the demo installation) as viewers. Empty = no public demo.
+    demo_tenant: str = ""
+    demo_ip_questions_per_10min: int = 5
+    demo_ip_questions_per_day: int = 20
+    demo_questions_per_day: int = 300  # across all visitors
+    demo_sessions_per_ip_per_hour: int = 30
+    # Behind a reverse proxy (Caddy) the client IP comes from X-Forwarded-For.
+    trust_proxy_headers: bool = False
     # Local demo only: /auth/dev-login signs in without GitHub. Requires env == "dev".
     dev_login: bool = False
     repo_permission_cache_s: int = 300

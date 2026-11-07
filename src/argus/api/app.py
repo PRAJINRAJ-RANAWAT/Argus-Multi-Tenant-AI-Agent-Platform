@@ -23,6 +23,7 @@ from fastapi import APIRouter, Cookie, Depends, FastAPI, Header, HTTPException, 
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
+    JSONResponse,
     RedirectResponse,
     Response,
     StreamingResponse,
@@ -30,6 +31,15 @@ from fastapi.responses import (
 from pydantic import BaseModel, Field
 
 from argus.agents.qa import QAError, create_qa_run
+from argus.api.demo import (
+    DEMO_USER_LOGIN,
+    DemoLimitError,
+    check_question_limits,
+    check_session_limit,
+    client_ip,
+    demo_tenant,
+    ensure_demo_member,
+)
 from argus.approvals import decide
 from argus.auth import RANK, Principal, audit, tenant_conn
 from argus.auth.apikeys import create_key, principal_for_key
@@ -90,6 +100,13 @@ async def get_principal(
     if session is None:
         raise HTTPException(status_code=401, detail="not signed in")
     rows = await res.db.fetch("SELECT * FROM argus_user_memberships($1)", session.user_id)
+    if session.demo:
+        # Demo visitors are pinned to the demo tenant; headers and cookies cannot widen it.
+        demo = res.settings.demo_tenant.lower()
+        rows = [r for r in rows if demo and r["account_login"].lower() == demo]
+        if not rows:
+            raise HTTPException(status_code=401, detail="the demo session has expired")
+        x_argus_tenant = argus_tenant = None
     if not rows:
         raise HTTPException(status_code=403, detail="no Argus installation for this user")
     # Tenant: X-Argus-Tenant header, else the dashboard's tenant cookie, else the first
@@ -108,6 +125,7 @@ async def get_principal(
         role=row["role"],
         user_id=session.user_id,
         github_login=session.github_login,
+        demo=session.demo,
     )
 
 
@@ -335,7 +353,25 @@ async def logout(
 
 # --- tenant API ----------------------------------------------------------------------
 
-api = APIRouter(prefix="/api")
+DEMO_WRITES_ALLOWED = frozenset({"/api/qa"})  # rate limited and budgeted, see post_qa
+
+
+async def demo_read_only(request: Request, p: CurrentPrincipal) -> None:
+    """Demo visitors can read everything in the demo tenant and change nothing. Enforced
+    here on the server for every API route, not just hidden in the UI."""
+    if (
+        p.demo
+        and request.method not in ("GET", "HEAD", "OPTIONS")
+        and (request.url.path not in DEMO_WRITES_ALLOWED)
+    ):
+        await _deny(request, p, "demo.write_blocked", f"{request.method} {request.url.path}")
+        raise HTTPException(
+            status_code=403,
+            detail="Demo mode is read-only. Install Argus on your repositories to make changes.",
+        )
+
+
+api = APIRouter(prefix="/api", dependencies=[Depends(demo_read_only)])
 
 
 @api.get("/me")
@@ -349,7 +385,8 @@ async def me(request: Request, p: CurrentPrincipal) -> dict[str, object]:
     return {
         "actor": {"type": p.actor_type, "id": p.actor_id, "github_login": p.github_login},
         "tenant": {"login": p.tenant_login, "role": p.role},
-        "tenants": tenants,
+        "tenants": [] if p.demo else tenants,
+        "demo": p.demo,
     }
 
 
@@ -365,7 +402,27 @@ async def post_qa(
     body: QARequest,
     idempotency_key: Annotated[str | None, Header(max_length=200)] = None,
 ) -> dict[str, object]:
-    await require(request, p, "qa:create", "qa.create")
+    res = _resources(request)
+    if p.demo:
+        # Demo visitors may ask (viewer role otherwise forbids it), within limits.
+        try:
+            await check_question_limits(
+                res.redis,
+                res.db,
+                tenant_id=p.tenant_id,
+                ip=client_ip(request, res.settings.trust_proxy_headers),
+                per_10min=res.settings.demo_ip_questions_per_10min,
+                per_day_ip=res.settings.demo_ip_questions_per_day,
+                per_day_all=res.settings.demo_questions_per_day,
+            )
+        except DemoLimitError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail=str(exc),
+                headers={"Retry-After": str(exc.retry_after_s)},
+            ) from exc
+    else:
+        await require(request, p, "qa:create", "qa.create")
     async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
         repo = await _repo_for(request, p, conn, full_name=body.repo, action="qa.create")
         try:
@@ -1053,7 +1110,10 @@ async def get_usage(
             SELECT model, count(*) AS calls, sum(input_tokens) AS input,
                    sum(output_tokens) AS output, sum(cached_tokens) AS cached,
                    sum(cost_usd) AS cost, count(*) FILTER (WHERE status <> 'ok') AS errors
-            FROM llm_calls WHERE created_at > now() - make_interval(days => $1)
+            FROM llm_calls
+            -- The same UTC calendar days as the daily rows above, so the totals agree.
+            WHERE created_at >= (((now() AT TIME ZONE 'UTC')::date - ($1::int - 1))::timestamp
+                                 AT TIME ZONE 'UTC')
             GROUP BY model ORDER BY model
             """,
             days,
@@ -1126,9 +1186,69 @@ def create_app(
                 await app_db.close()
 
     def configure(app: FastAPI) -> None:
-        @app.get("/")
-        async def root() -> dict[str, str]:
-            return {"name": "Argus", "message": "Hello from Argus", "app": "/app/"}
+        @app.get("/", response_model=None)
+        async def root(request: Request) -> Response:
+            """The public landing page (built from frontend/landing.html)."""
+            landing = WEB_DIST / "landing.html"
+            if not landing.exists():
+                return JSONResponse(
+                    {"name": "Argus", "message": "Hello from Argus", "app": "/app/"}
+                )
+            public = _resources(request).settings.public_url.rstrip("/")
+            html = landing.read_text().replace("__PUBLIC_URL__", public)
+            return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+        @app.get("/demo", include_in_schema=False, response_model=None)
+        async def demo(request: Request) -> Response:
+            """Sign the visitor into the read-only demo and open the app."""
+            res = _resources(request)
+            if not res.settings.demo_tenant:
+                raise HTTPException(status_code=404, detail="no public demo on this server")
+            tenant = await demo_tenant(res.db, res.settings.demo_tenant)
+            if tenant is None:
+                raise HTTPException(status_code=503, detail="the demo is being prepared")
+            try:
+                await check_session_limit(
+                    res.redis,
+                    client_ip(request, res.settings.trust_proxy_headers),
+                    res.settings.demo_sessions_per_ip_per_hour,
+                )
+            except DemoLimitError as exc:
+                raise HTTPException(status_code=429, detail=str(exc)) from exc
+            user_id = await ensure_demo_member(res.db, tenant["id"])
+            session_id = await create_session(
+                res.redis, user_id, DEMO_USER_LOGIN, 6 * 3600, demo=True
+            )
+            resp = RedirectResponse("/app/", status_code=302)
+            resp.set_cookie(
+                COOKIE,
+                session_id,
+                httponly=True,
+                secure=res.settings.cookie_secure,
+                samesite="lax",
+                max_age=6 * 3600,
+            )
+            resp.delete_cookie("argus_tenant", path="/")
+            return resp
+
+        @app.get("/robots.txt", include_in_schema=False)
+        async def robots(request: Request) -> Response:
+            public = _resources(request).settings.public_url.rstrip("/")
+            body = (
+                f"User-agent: *\nAllow: /\nDisallow: /app/\nDisallow: /api/\n"
+                f"Disallow: /auth/\nSitemap: {public}/sitemap.xml\n"
+            )
+            return Response(body, media_type="text/plain")
+
+        @app.get("/sitemap.xml", include_in_schema=False)
+        async def sitemap(request: Request) -> Response:
+            public = _resources(request).settings.public_url.rstrip("/")
+            body = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                f"<url><loc>{public}/</loc><changefreq>weekly</changefreq></url></urlset>\n"
+            )
+            return Response(body, media_type="application/xml")
 
         @app.get("/dashboard", response_model=None)
         async def dashboard() -> Response:

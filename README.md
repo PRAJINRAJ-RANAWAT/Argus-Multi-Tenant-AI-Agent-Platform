@@ -183,6 +183,8 @@ Then open:
 
 | What | URL |
 |---|---|
+| **Landing page** | http://localhost:8000/ |
+| **Public read-only demo** (no login, sample team "northwind") | http://localhost:8000/demo |
 | **Web app** (signs you in as a demo owner) | http://localhost:8000/auth/dev-login?login=demo |
 | Reviews Argus posted (fake GitHub) | http://localhost:9000/_fake/comments |
 | API docs | http://localhost:8000/docs |
@@ -191,6 +193,21 @@ Then open:
 | Prometheus | http://localhost:9090 |
 
 The seeded PRs carry planted bugs (SQL injection, a hardcoded secret, off-by-one, a missing None check), one clean PR and one with a prompt injection. Ask the codebase from the dashboard, e.g. "How do we retry with exponential backoff?". `make demo-down` stops it.
+
+### Public demo mode
+
+`/demo` signs a visitor in, with no GitHub login, as a **viewer** of one dedicated tenant (`ARGUS_DEMO_TENANT`) and nothing else. The server enforces it, not the UI:
+
+- every write (settings, budget, approvals, members, API keys, feedback, runs) returns 403 and is audited as `demo.write_blocked`; only asking a question is allowed;
+- tenant headers and cookies are ignored for demo sessions, and row-level security still applies;
+- questions are limited per IP (5 per 10 minutes, 20 per day), 300 per day for all visitors, and stop when the tenant's daily token budget is spent, each with a friendly message;
+- new demo sessions are limited per IP, and a demo session stops working when the demo is switched off.
+
+`argus-seed-demo` creates the demo tenant idempotently: four repositories with real indexed code and four weeks of history (succeeded, failed and superseded reviews, pending approvals, Q&A with cited files, flagged injections, budget usage), with durations, tokens and costs shaped like real Sonnet- and Haiku-class model calls. `make demo` runs it as the `seed-demo` service. Tests: `tests/test_demo.py`.
+
+## Landing page
+
+`/` serves `frontend/landing.html`: what Argus does, a demo video slot, the architecture with scroll-driven callouts, proof in numbers and the engineering write-ups. Every number is read at build time by `frontend/scripts/build-proof.mjs` from the load-and-chaos report and the eval reports in this repository; a metric whose report is missing is not shown. Motion uses GSAP (ScrollTrigger, SplitText, MotionPath) with Lenis smooth scrolling and switches off for `prefers-reduced-motion`. Set `GITHUB_URL`, `LINKEDIN_URL` and `DEMO_VIDEO_URL` in `frontend/src/landing/config.ts`.
 
 ## Web app
 

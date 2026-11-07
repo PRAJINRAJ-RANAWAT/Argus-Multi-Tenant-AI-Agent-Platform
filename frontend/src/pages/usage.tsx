@@ -151,7 +151,7 @@ export function UsagePage() {
               <p className="mt-3 text-3xl font-semibold leading-none">
                 <NumberTicker value={cost} format={(n) => usd(n)} />
               </p>
-              <p className="mt-2 text-xs text-muted-foreground">Mock provider prices in the demo</p>
+              <p className="mt-2 text-xs text-muted-foreground">Priced per model by the gateway</p>
             </SpotlightCard>
             <SpotlightCard className="p-4">
               <div className="flex justify-between">

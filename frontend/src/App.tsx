@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { ApiError, api, type Role } from "@/lib/api"
-import { SessionContext, useCan } from "@/lib/session"
+import { SessionContext, useCan, useDemo } from "@/lib/session"
 import { AccessPage } from "@/pages/access"
 import { ApprovalsPage } from "@/pages/approvals"
 import { AskPage } from "@/pages/ask"
@@ -30,8 +30,17 @@ const queryClient = new QueryClient({
   },
 })
 
-function RequireRole({ min, children }: { min: Role; children: React.ReactNode }) {
-  if (!useCan(min)) {
+function RequireRole({
+  min,
+  children,
+  demoAllowed = false,
+}: {
+  min: Role
+  children: React.ReactNode
+  demoAllowed?: boolean
+}) {
+  const demo = useDemo()
+  if (!useCan(min) && !(demoAllowed && demo)) {
     return (
       <EmptyState icon={ShieldOff} title="Not available for your role">
         This page needs the {min} role in this organisation.
@@ -82,7 +91,7 @@ function Authenticated() {
           <Route
             path="ask"
             element={
-              <RequireRole min="member">
+              <RequireRole min="member" demoAllowed>
                 <AskPage />
               </RequireRole>
             }

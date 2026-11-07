@@ -45,4 +45,8 @@ async def test_readyz_degraded_when_redis_down(settings: Settings) -> None:
 async def test_api_root(settings: Settings) -> None:
     resp = await _get(create_api(settings), "/")
     assert resp.status_code == 200
-    assert resp.json()["name"] == "Argus"
+    if resp.headers["content-type"].startswith("text/html"):  # landing page is built
+        assert "__PUBLIC_URL__" not in resp.text
+        assert f'href="{settings.public_url.rstrip("/")}/"' in resp.text
+    else:
+        assert resp.json()["name"] == "Argus"

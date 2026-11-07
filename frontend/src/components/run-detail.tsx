@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api, type Run } from "@/lib/api"
 import { AGENT_LABEL, dateTime, duration, integer, runDuration, timeAgo } from "@/lib/format"
+import { useDemo } from "@/lib/session"
 
 function Stat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -196,6 +197,7 @@ export function RunDetailSheet({
     enabled: !!runId,
   })
   const r = run.data
+  const demo = useDemo()
   return (
     <Sheet open={!!runId} onOpenChange={onOpenChange}>
       <SheetContent className="flex w-full flex-col gap-0 border-l-[1.5px] p-0 sm:max-w-xl">
@@ -260,7 +262,7 @@ export function RunDetailSheet({
             )}
           </div>
         </ScrollArea>
-        {r && r.status === "succeeded" && (
+        {r && r.status === "succeeded" && !demo && (
           <div className="border-t-[1.5px] border-border p-4">
             <Feedback run={r} />
           </div>
