@@ -27,6 +27,7 @@ from argus.rag.indexer import Indexer, RepoRef
 from argus.rag.search import LexicalReranker, find_callers, hybrid_search, query_terms
 from argus.runs import upsert_repo, upsert_tenant
 from tests.conftest import app_client
+from tests.factories import make_api_key
 from tests.fakes import GITHUB_API, FakeGitHub
 
 pytestmark = pytest.mark.integration
@@ -181,9 +182,15 @@ async def test_find_callers(env: Env) -> None:
 
 
 async def test_qa_end_to_end_with_verified_citations(env: Env) -> None:
-    headers = {"authorization": f"Bearer {ADMIN}", "idempotency-key": "q1"}
+    key = await make_api_key(env.pool, env.repo.tenant_id)
+    headers = {"authorization": f"Bearer {key}", "idempotency-key": "q1"}
     body = {"repo": "acme/shop", "question": "Where do we retry with backoff?"}
-    async with app_client(create_api(env.settings)) as c:
+
+    async def no_tokens(_: int) -> str:
+        return "ghs_fake_1_1"
+
+    api = create_api(env.settings, http_transport=env.gh.transport(), github_tokens=no_tokens)
+    async with app_client(api) as c:
         r = await c.post("/api/qa", json=body, headers=headers)
         assert r.status_code == 202
         run_id = r.json()["run_id"]
@@ -191,7 +198,7 @@ async def test_qa_end_to_end_with_verified_citations(env: Env) -> None:
         assert again.json() == {**r.json(), "created": False}
         assert (
             await c.post("/api/qa", json={**body, "repo": "x/y"}, headers=headers)
-        ).status_code == 422
+        ).status_code == 404
         assert (await c.post("/api/qa", json=body)).status_code == 401
 
         while await relay_once(env.pool, env.redis):

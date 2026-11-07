@@ -146,3 +146,18 @@ class GitHubClient:
         resp.raise_for_status()
         body = resp.json()
         return [t for t in body.get("tree", []) if t.get("type") == "blob"]
+
+    async def get_collaborator_permission(
+        self, installation_id: int, repo: str, username: str
+    ) -> str:
+        """The user's permission on the repo: admin, maintain, write, triage, read or none."""
+        resp = await self.http.get(
+            f"{self.api_url}/repos/{repo}/collaborators/{username}/permission",
+            headers=await self._headers(installation_id, "application/vnd.github+json"),
+        )
+        if resp.status_code == 404:
+            return "none"
+        resp.raise_for_status()
+        body = resp.json()
+        role = body.get("role_name") or body.get("permission") or "none"
+        return str(role)

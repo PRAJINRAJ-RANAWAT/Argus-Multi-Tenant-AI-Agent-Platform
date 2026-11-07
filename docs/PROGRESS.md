@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**M3 · Code RAG**: in review. Next: M4 · Tenancy and auth.
+**M4 · Tenancy and auth**: in review. Next: M5 · LLM gateway.
 
 M1's live "done when" (install the App → a review appears) is still waiting on the VPS and GitHub App (blockers below).
 
@@ -66,9 +66,20 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - Codebase Q&A: `POST /api/qa` (outbox → `jobs:qa`, Idempotency-Key), `GET /api/runs/{id}`; tool loop over search/callers/read_file; citations verified against the index. Admin token until M4. ADR 0008.
 - Tests (140 total): **one-line push embeds exactly one chunk**; push webhook end to end reads only the changed file; installation → full index; late older push never overwrites newer content; deletes leave tombstones that beat late events; 6 concurrent indexers of one file stay consistent; call graph; embedding cache never crosses tenants; search by meaning and identifier; search never crosses tenants or repos (even with a foreign repo id); Q&A end to end with verified citations and idempotent create.
 
+### M3 · Code RAG (merged, `v0.3.0`)
+
+### M4 · Tenancy and auth
+- Migration 0007: `users`, `memberships` (role + source), `api_keys` (hashed, role, repo limits, revocable), `audit_log` (append-only trigger, per-tenant hash chain via `argus_audit`, `argus_audit_verify`), `run_steps.tenant_id`, `pg_notify` trigger on runs.
+- Row-level security on every tenant table; the API's `argus_app` role (NOBYPASSRLS, startup setting) + `tenant_conn` (transaction-local `app.tenant_id`). SECURITY DEFINER functions for pre-tenant lookups.
+- GitHub OAuth login (state in Redis, no open redirects, user token not stored), membership sync from installations and org role, Redis sessions (hashed ids, HttpOnly/SameSite cookie), logout.
+- Roles `viewer`/`member`/`admin`/`owner`; private repos also need the user's GitHub permission (installation token, cached 5 min); unknown = forbidden = 404.
+- API: `/api/me`, `/api/runs` (+ `/{id}`, `/stream` SSE), `/api/qa`, `/api/keys` (create/list/revoke), `/api/members` (+ role change, last-owner guard), `/api/audit` (with chain verification). `/dashboard` page with live updates. Admin token now only for operator `/admin/dlq`.
+- Agents audit every tool allow/deny with redacted arguments. `argus.redact` for secrets. ADR 0009.
+- Tests (152 total): **RLS shows each tenant only its rows in every table with no WHERE; no tenant → nothing; cross-tenant insert rejected; tenant setting doesn't leak; API key of A gets 404 for B's runs/repos and never sees B's answers or code**; login creates memberships from GitHub, tenant choice, access removed when GitHub access is lost; bad OAuth state and open redirects rejected; private repo hidden until the user's GitHub permission allows it (denial audited); role gates; key lifecycle (hash only, repo limits, revoke); last owner protected; audit append-only and tamper-evident; audit details redacted; run events only reach their tenant.
+
 ## Next
 
-- **M4 · Tenancy and auth:** GitHub OAuth login, sessions, roles (`owner`/`admin`/`member`/`viewer`), effective permission = role ∧ GitHub repo permission, row-level security with `app.tenant_id`, hashed API keys, append-only audit log (hash-chained), dashboard with live runs over SSE. Done when tests prove tenant A cannot read tenant B's runs, code or answers.
+- **M5 · LLM gateway:** provider adapters (OpenAI-compatible + Anthropic) with streaming, model routing with logged routes, prompt-cache-friendly ordering, Q&A semantic cache keyed by tenant+repo+commit+role, Redis token-bucket limits (Lua) per tenant and provider, per-tenant daily budgets (check before, reconcile after, alert at 80%), retries with backoff honouring Retry-After, per-model circuit breaker with fallback, separate timeouts, per-call accounting. Done when a per-tenant budget stops runs and a provider outage fails over cleanly.
 
 ## Blockers waiting on the owner
 
