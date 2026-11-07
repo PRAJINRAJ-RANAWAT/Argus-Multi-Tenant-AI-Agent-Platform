@@ -85,7 +85,7 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - Agents use `for_run(tenant, run, agent)`; step identity is the tier. Budget exhaustion fails the run; rate-limit waits re-queue without using attempts.
 - Q&A semantic cache (tenant + repo + commit + role scope). Mock LLM gains `/v1/messages` and per-model outages (`fail_models`).
 - API: `PUT /api/budget`, `GET /api/usage`. Migration 0008, ADR 0010.
-- Tests (169 total): **budget stops a PR review run (failed, not retried, no comment, budget released)**; **outage of the primary fails over to the fallback, breaker opens after 3 failures and skips the dead model, then a probe closes it after recovery**; total outage is retryable and releases the reservation; `Retry-After` honoured and attempts bounded; 4xx not retried; tenant token bucket limits only that tenant; rate-limited messages retry without using attempts; 20 concurrent calls never overspend; alert fires once; Anthropic conversion and tool round trip; streaming and TTFT timeout; every call accounted with cost; semantic cache scoping and reuse.
+- Tests (168 total): **budget stops a PR review run (failed, not retried, no comment, budget released)**; **outage of the primary fails over to the fallback, breaker opens after 3 failures and skips the dead model, then a probe closes it after recovery**; total outage is retryable and releases the reservation; `Retry-After` honoured and attempts bounded; 4xx not retried; tenant token bucket limits only that tenant; rate-limited messages retry without using attempts; 20 concurrent calls never overspend; alert fires once; Anthropic conversion and tool round trip; streaming and TTFT timeout; every call accounted with cost; semantic cache scoping and reuse.
 
 ## Next
 
