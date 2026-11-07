@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**M8 · Evals in CI**: in review. Next: M9 · Scale and chaos.
+**All milestones M0–M9 are complete.** Remaining items need the owner (blockers below).
 
 M1's live "done when" (install the App → a review appears) is still waiting on the VPS and GitHub App (blockers below).
 
@@ -115,9 +115,18 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - Baseline: review recall 1.00, precision 1.00, line accuracy 1.00, judge 5.0 (agreement 1.0), Q&A retrieval@5 0.93, citations 0.93, ASR 3.5%.
 - Tests (198 total): **deliberately worse prompt fails the gate** (recall 0, judge 2.0); dropping "security problems" from the prompt fails it; current prompt passes; gate rules incl. untrustworthy judge; online sampling, judging and feedback.
 
-## Next
+### M8 · Evals in CI (merged, `v0.8.0`)
+- A deliberately worse prompt failed CI on a throwaway PR (#13, closed): review recall 1.00 → 0.00, judge 5.0 → 2.0.
 
-- **M9 · Scale and chaos:** per-tenant fair scheduling (sub-queues, round-robin, per-tenant concurrency cap), autoscaling signal on lag, k6/Locust load tests and chaos scenarios (burst, duplicate storm, kill -9, zombie, force-push churn, noisy neighbour, provider outage, rate-limit storm, Redis restart), and a published load and chaos report. Done when the noisy-neighbour test passes and the report is public.
+### M9 · Scale and chaos
+- Per-tenant fair scheduling (`FairQueue`): lanes per tenant, round-robin reads, cross-worker concurrency cap with slot leases, work-conserving borrowing, atomic pruning of idle tenants; relay routes fair topics by installation. Load shedding pauses indexing/evals while interactive queues lag. `argus-autoscale` (Little's law). Event reaper for events lost from Redis. Supersede also on newer accepted events. Queue failures while settling leave messages for reclaim. Migration 0011. ADR 0014.
+- Local demo: `make demo` (fake GitHub service, generated demo App key, dev-only login, seeded PRs and Q&A in the dashboard) and `argus-demo`.
+- k6 webhook burst script. [Load and chaos report](load-and-chaos-report.md): 300 webhooks/s at p99 114.8 ms, 0 failed, 0 lost; noisy neighbour quiet p95 1.9 s vs 5.9 s FIFO; Redis restart 40/40 with one comment each; six incidents found and fixed.
+- Tests (211 total): noisy neighbour (done when), round-robin, cap across workers, dead worker cannot leak capacity, capped tenant cannot borrow while others wait, late lanes served, idle pruning, duplicate storm, force-push churn, Redis data loss, queue outage while settling, load shedding, autoscaling policy.
+
+## After M9
+
+- Live deployment and the GitHub App (blockers below), then a nightly real-model eval run.
 
 ## Blockers waiting on the owner
 

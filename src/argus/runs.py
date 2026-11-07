@@ -184,7 +184,9 @@ async def reap_runs(
                                      THEN r.lease_version + 1 ELSE r.lease_version END,
                 updated_at = now()
             FROM picked WHERE r.id = picked.id
-            RETURNING r.id, r.tenant_id, r.agent_type
+            RETURNING r.id, r.tenant_id, r.agent_type,
+                      (SELECT 'inst:' || t.github_installation_id FROM tenants t
+                       WHERE t.id = r.tenant_id) AS fair_key
             """,
             stuck_queued_s,
             limit,
@@ -196,7 +198,7 @@ async def reap_runs(
             await conn.execute(
                 "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",
                 topic,
-                json.dumps({"run_id": str(r["id"]), "reason": "reaped"}),
+                json.dumps({"run_id": str(r["id"]), "reason": "reaped", "fair_key": r["fair_key"]}),
             )
     return len(rows)
 
@@ -345,6 +347,33 @@ async def newer_run_id(pool: asyncpg.Pool, run_id: uuid.UUID) -> uuid.UUID | Non
     return newer
 
 
+async def newer_event_id(pool: asyncpg.Pool, run_id: uuid.UUID) -> uuid.UUID | None:
+    """A ``pull_request`` event for the same PR at a different head SHA, received after
+    this run's trigger. Catches newer pushes that were accepted but whose run does not
+    exist yet (its message is still queued), so the older run never posts first."""
+    newer: uuid.UUID | None = await pool.fetchval(
+        """
+        SELECT n.id
+        FROM runs r
+        JOIN events e ON e.id = r.trigger_event_id
+        JOIN events n ON n.event_type = 'pull_request'
+                     AND n.installation_id = e.installation_id
+                     AND n.payload -> 'repository' ->> 'id' = e.payload -> 'repository' ->> 'id'
+                     AND n.payload -> 'pull_request' ->> 'number'
+                         = e.payload -> 'pull_request' ->> 'number'
+                     AND n.payload -> 'pull_request' -> 'head' ->> 'sha'
+                         IS DISTINCT FROM r.head_sha
+                     AND n.action IN ('opened', 'synchronize', 'reopened', 'ready_for_review')
+                     AND (n.received_at, n.id) > (e.received_at, e.id)
+        WHERE r.id = $1 AND e.event_type = 'pull_request'
+        ORDER BY n.received_at DESC
+        LIMIT 1
+        """,
+        run_id,
+    )
+    return newer
+
+
 async def supersede_queued(pool: asyncpg.Pool, run_id: uuid.UUID, newer: uuid.UUID) -> bool:
     """Mark a run nobody holds as superseded (no lease needed: it is not running)."""
     tag = await pool.execute(
@@ -357,3 +386,49 @@ async def supersede_queued(pool: asyncpg.Pool, run_id: uuid.UUID, newer: uuid.UU
         str(newer),
     )
     return bool(tag == "UPDATE 1")
+
+
+async def reap_events(pool: asyncpg.Pool, *, older_than_s: float = 600.0, limit: int = 100) -> int:
+    """Re-enqueue accepted events that never produced work (e.g. Redis lost the stream
+    message after the relay published it). An event stays ``received`` until a worker
+    finishes with it; a routed event older than ``older_than_s`` with no run is
+    republished through the outbox. Handlers are idempotent, so a duplicate is harmless."""
+    from argus.github.webhooks import route_github_event
+
+    rows = await pool.fetch(
+        """
+        SELECT e.id, e.event_type, e.payload::text AS payload, e.installation_id
+        FROM events e
+        WHERE e.status = 'received' AND e.received_at < now() - make_interval(secs => $1)
+          AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.trigger_event_id = e.id)
+          AND NOT EXISTS (
+              SELECT 1 FROM outbox o
+              WHERE o.published_at IS NULL AND o.payload->>'event_id' = e.id::text)
+        ORDER BY e.received_at
+        LIMIT $2
+        """,
+        older_than_s,
+        limit,
+    )
+    n = 0
+    for r in rows:
+        topic = route_github_event(r["event_type"], json.loads(r["payload"]))
+        if topic is None:
+            continue
+        await pool.execute(
+            "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",
+            topic,
+            json.dumps(
+                {
+                    "event_id": str(r["id"]),
+                    "installation_id": r["installation_id"],
+                    "event_type": r["event_type"],
+                    "reason": "event_reaped",
+                }
+            ),
+        )
+        await pool.execute(
+            "UPDATE events SET received_at = now() WHERE id = $1 AND status = 'received'", r["id"]
+        )
+        n += 1
+    return n

@@ -272,11 +272,16 @@ async def test_github_login_creates_memberships_from_github(env: Env) -> None:
         assert me["tenant"] == {"login": "acme", "role": "admin"}
         assert me["actor"]["github_login"] == "alice"
 
-        # A second installation → the user must pick a tenant.
+        # A second installation: the first tenant by default, switchable by header/cookie.
         await env.login(c, "alice", [(1, "acme", "Organization"), (2, "globex", "Organization")])
-        assert (await c.get("/api/me")).status_code == 400
+        assert (await c.get("/api/me")).json()["tenant"]["login"] == "acme"
         me = (await c.get("/api/me", headers={"x-argus-tenant": "globex"})).json()
         assert me["tenant"] == {"login": "globex", "role": "member"}
+        c.cookies.set("argus_tenant", "globex")
+        assert (await c.get("/api/me")).json()["tenant"]["login"] == "globex"
+        c.cookies.set("argus_tenant", "not-mine")  # a stale cookie never grants access
+        assert (await c.get("/api/me")).json()["tenant"]["login"] == "acme"
+        c.cookies.delete("argus_tenant")
 
         # Losing GitHub access removes Argus access at the next login.
         await env.login(c, "alice", [(2, "globex", "Organization")])

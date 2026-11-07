@@ -1,4 +1,4 @@
-.PHONY: install lint fmt typecheck test check up down logs migrate
+.PHONY: demo demo-down install lint fmt typecheck test check up down logs migrate
 
 install:
 	uv sync
@@ -22,6 +22,16 @@ check: lint typecheck test
 
 up:
 	docker compose up -d --build
+
+DEMO = docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.demo.yml
+
+demo:  ## local demo: full stack + observability + fake GitHub, seeded with PRs
+	$(DEMO) up -d --build
+	@sleep 8
+	uv run argus-demo
+
+demo-down:
+	$(DEMO) down
 
 down:
 	docker compose down

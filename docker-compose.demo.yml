@@ -1,0 +1,66 @@
+# Local demo: everything runs end to end without a real GitHub App or LLM key.
+#   make demo        # builds, starts the stack + observability + demo services, seeds data
+# A throwaway GitHub App key is generated into a volume; GitHub is the in-memory fake
+# (argus.testing.fake_github_app); the LLM is the mock. Never use this file in production.
+x-demo-github: &demo-github
+  ARGUS_GITHUB_API_URL: http://fake-github:9000
+  ARGUS_GITHUB_WEB_URL: http://fake-github:9000
+  ARGUS_GITHUB_APP_ID: "1"
+  ARGUS_GITHUB_PRIVATE_KEY_PATH: /keys/app.pem
+
+services:
+  dev-keys:
+    image: argus:dev
+    user: "0:0"  # writes into the fresh volume; the key is made readable for the app user
+    command:
+      - python
+      - -c
+      - |
+        import os
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        path = "/keys/app.pem"
+        if not os.path.exists(path):
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            with open(path, "wb") as f:
+                f.write(key.private_bytes(serialization.Encoding.PEM,
+                        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            os.chmod(path, 0o644)  # throwaway demo key, read by the non-root app user
+            print("generated demo GitHub App key")
+    volumes: ["demo-keys:/keys"]
+    restart: "no"
+    depends_on: []
+
+  fake-github:
+    image: argus:dev
+    command: ["uvicorn", "argus.testing.fake_github_app:create_app", "--factory", "--host", "0.0.0.0", "--port", "9000"]
+    ports: ["9000:9000"]
+    depends_on: []
+
+  api:
+    environment:
+      <<: *demo-github
+      ARGUS_DEV_LOGIN: "true"
+      ARGUS_COOKIE_SECURE: "false"
+      ARGUS_PUBLIC_URL: http://localhost:8000
+      ARGUS_ADMIN_TOKEN: demo-admin-token
+    volumes: ["demo-keys:/keys:ro"]
+    depends_on:
+      dev-keys:
+        condition: service_completed_successfully
+      fake-github:
+        condition: service_started
+
+  worker:
+    environment:
+      <<: *demo-github
+      ARGUS_ONLINE_EVAL_RATE: "1.0"
+    volumes: ["demo-keys:/keys:ro"]
+    depends_on:
+      dev-keys:
+        condition: service_completed_successfully
+      fake-github:
+        condition: service_started
+
+volumes:
+  demo-keys:

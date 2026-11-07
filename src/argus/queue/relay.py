@@ -21,6 +21,7 @@ from argus.config import Settings, get_settings
 from argus.db.pool import create_pool
 from argus.logging import configure_logging
 from argus.metrics import OUTBOX_PUBLISHED
+from argus.queue.fair import DEFAULT_LANE, lane_stream
 from argus.queue.streams import STREAM_MAXLEN
 from argus.telemetry import configure_tracing, extract, inject, span
 
@@ -29,7 +30,22 @@ log = logging.getLogger("argus.relay")
 BATCH = 200
 
 
-async def relay_once(pool: asyncpg.Pool, redis: Redis, batch: int = BATCH) -> int:
+def fair_key(payload: dict[str, object]) -> str | None:
+    """Tenant lane for fair topics: the GitHub installation (one per tenant)."""
+    key = payload.get("fair_key")
+    if key:
+        return str(key)
+    inst = payload.get("installation_id")
+    return f"inst:{inst}" if inst else None
+
+
+async def relay_once(
+    pool: asyncpg.Pool,
+    redis: Redis,
+    batch: int = BATCH,
+    *,
+    fair_topics: frozenset[str] = frozenset(),
+) -> int:
     """Publish one batch of unpublished outbox rows. Returns rows published."""
     async with pool.acquire() as conn, conn.transaction():
         rows = await conn.fetch(
@@ -47,7 +63,8 @@ async def relay_once(pool: asyncpg.Pool, redis: Redis, batch: int = BATCH) -> in
         pipe = redis.pipeline(transaction=False)
         for r in rows:
             fields = {"data": r["payload"], "attempt": "0", "outbox_id": str(r["id"])}
-            parent = extract((json.loads(r["payload"]) or {}).get("trace"))
+            payload = json.loads(r["payload"]) or {}
+            parent = extract(payload.get("trace"))
             with span(
                 "outbox.relay",
                 kind=SpanKind.PRODUCER,
@@ -55,7 +72,12 @@ async def relay_once(pool: asyncpg.Pool, redis: Redis, batch: int = BATCH) -> in
                 attributes={"messaging.destination": r["topic"], "outbox.id": r["id"]},
             ):
                 fields.update(inject())  # traceparent of this hop, for the consumer
-            pipe.xadd(r["topic"], fields, maxlen=STREAM_MAXLEN, approximate=True)  # type: ignore[arg-type]
+            if r["topic"] in fair_topics:
+                lane = lane_stream(r["topic"], fair_key(payload) or DEFAULT_LANE)
+                pipe.xadd(lane, fields, maxlen=STREAM_MAXLEN, approximate=True)  # type: ignore[arg-type]
+                pipe.sadd(f"{r['topic']}:tenants", lane.rsplit(":t:", 1)[1])
+            else:
+                pipe.xadd(r["topic"], fields, maxlen=STREAM_MAXLEN, approximate=True)  # type: ignore[arg-type]
             OUTBOX_PUBLISHED.labels(r["topic"]).inc()
         await pipe.execute()
         await conn.execute(
@@ -83,6 +105,7 @@ async def run_relay(
     stop: asyncio.Event,
     *,
     poll_s: float = 1.0,
+    fair_topics: frozenset[str] = frozenset(),
 ) -> None:
     """Drain the outbox; wake on NOTIFY, poll as a fallback."""
     wake = asyncio.Event()
@@ -97,7 +120,7 @@ async def run_relay(
         while not stop.is_set():
             wake.clear()
             try:
-                while await relay_once(pool, redis) == BATCH:
+                while await relay_once(pool, redis, fair_topics=fair_topics) == BATCH:
                     pass
                 backoff = 0.5
             except Exception as exc:
@@ -134,7 +157,9 @@ def main() -> None:
         redis = Redis.from_url(settings.redis_url, decode_responses=True)
         try:
             log.info("relay started")
-            await run_relay(pool, redis, settings.database_url, stop)
+            await run_relay(
+                pool, redis, settings.database_url, stop, fair_topics=settings.fair_topic_set()
+            )
         finally:
             await redis.aclose()
             await pool.close()

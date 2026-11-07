@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     public_url: str = "http://localhost:8000"  # where users reach the API (OAuth callback)
     session_ttl_s: int = 7 * 24 * 3600
     cookie_secure: bool = True
+    # Local demo only: /auth/dev-login signs in without GitHub. Requires env == "dev".
+    dev_login: bool = False
     repo_permission_cache_s: int = 300
 
     # LLM (OpenAI-compatible endpoint; the mock LLM in dev/tests)
@@ -86,6 +88,15 @@ class Settings(BaseSettings):
     admin_token: SecretStr = SecretStr("")
     worker_concurrency: int = 20
     index_concurrency: int = 4
+    # Fair scheduling: these topics get per-tenant lanes, each tenant capped at
+    # tenant_concurrency in-flight jobs across all workers.
+    fair_topics: str = "jobs:review,jobs:qa"
+    tenant_concurrency: int = 4
+    # Load shedding: indexing and evals pause while interactive work lags this long.
+    shed_low_priority_after_s: float = 60.0
+
+    def fair_topic_set(self) -> frozenset[str]:
+        return frozenset(t.strip() for t in self.fair_topics.split(",") if t.strip())
 
     def github_private_key_pem(self) -> str:
         if self.github_private_key_path:
