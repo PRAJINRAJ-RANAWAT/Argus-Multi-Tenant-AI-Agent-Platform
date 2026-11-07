@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import asyncpg
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from redis.asyncio import Redis
 
 from argus.gateway import (
@@ -36,6 +38,8 @@ from argus.gateway.budget import Budgets
 from argus.gateway.limits import CircuitBreaker, TokenBucket
 from argus.gateway.providers import Provider
 from argus.llm.client import ChatResult, LLMError
+from argus.metrics import BREAKER_STATE, LLM_CALLS, LLM_COST, LLM_LATENCY, LLM_TOKENS
+from argus.telemetry import span
 
 log = logging.getLogger("argus.gateway")
 
@@ -128,6 +132,23 @@ class Gateway:
         latency_ms: float,
         error: str | None = None,
     ) -> None:
+        LLM_CALLS.labels(ref.name, status, reason.split(":")[0].split("+")[0]).inc()
+        if res is not None:
+            LLM_TOKENS.labels(ref.name, "input").inc(res.input_tokens)
+            LLM_TOKENS.labels(ref.name, "output").inc(res.output_tokens)
+            LLM_TOKENS.labels(ref.name, "cached").inc(res.cached_tokens)
+            LLM_COST.labels(ref.name).inc(self.cost(ref.name, res.input_tokens, res.output_tokens))
+            LLM_LATENCY.labels(ref.name).observe(latency_ms / 1000)
+            s = trace.get_current_span()
+            s.set_attribute("llm.model", ref.name)
+            s.set_attribute("llm.provider", ref.provider)
+            s.set_attribute("llm.route", reason)
+            s.set_attribute("llm.input_tokens", res.input_tokens)
+            s.set_attribute("llm.output_tokens", res.output_tokens)
+            s.set_attribute("llm.cached_tokens", res.cached_tokens)
+            s.set_attribute(
+                "llm.cost_usd", self.cost(ref.name, res.input_tokens, res.output_tokens)
+            )
         try:
             await self.pool.execute(
                 """
@@ -204,6 +225,30 @@ class Gateway:
         max_tokens: int = 1024,
         temperature: float = 0.2,
     ) -> ChatResult:
+        with span(
+            f"llm.chat {tier}",
+            kind=SpanKind.CLIENT,
+            attributes={
+                "llm.tier": tier,
+                "argus.agent": ctx.agent,
+                "argus.run_id": str(ctx.run_id) if ctx.run_id else None,
+                "llm.tools": len(tools or []),
+            },
+        ):
+            return await self._chat(
+                ctx, tier, messages, tools=tools, max_tokens=max_tokens, temperature=temperature
+            )
+
+    async def _chat(
+        self,
+        ctx: CallContext,
+        tier: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.2,
+    ) -> ChatResult:
         chain = self.routes.get(tier)
         if not chain:
             raise ValueError(f"no route for tier {tier!r}")
@@ -227,6 +272,8 @@ class Gateway:
         try:
             for ref in chain:
                 gate = await self.breaker.allow(str(ref))
+                if gate != 1:
+                    BREAKER_STATE.labels(str(ref)).set(2 if gate == 0 else 1)
                 if gate == 0:
                     reason = f"fallback:{ref.name}_breaker_open"
                     continue
@@ -245,6 +292,7 @@ class Gateway:
                     latency = (time.perf_counter() - started) * 1000
                     if exc.retryable:
                         state = await self.breaker.record(str(ref), ok=False)
+                        BREAKER_STATE.labels(str(ref)).set(2 if state == "open" else 0)
                         await self._record(
                             ctx,
                             tier,
@@ -265,6 +313,7 @@ class Gateway:
                     await self._record(ctx, tier, ref, route, "error", 1, None, latency, str(exc))
                     raise
                 await self.breaker.record(str(ref), ok=True)
+                BREAKER_STATE.labels(str(ref)).set(0)
                 latency = (time.perf_counter() - started) * 1000
                 actual = res.input_tokens + res.output_tokens
                 await self.budgets.settle(

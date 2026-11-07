@@ -9,11 +9,13 @@ fenced completion.
 
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
+from opentelemetry import trace
 from redis.asyncio import Redis
 
 from argus.agents.toolloop import audit_hook, run_tool_loop
@@ -26,10 +28,12 @@ from argus.guardrails.output import scan
 from argus.guardrails.runtime import InjectionGuard
 from argus.llm.client import ModelSource
 from argus.locks import OwnedLock, pr_lock_key
+from argus.logging import run_id_var, tenant_id_var
 from argus.mcp_servers import RunContext
 from argus.mcp_servers.code import build_code_server
 from argus.mcp_servers.github import build_github_server
 from argus.mcp_servers.github import comment_marker as comment_marker
+from argus.metrics import RUN_DURATION, RUNS
 from argus.queue.consumer import PermanentError
 from argus.queue.streams import Message
 from argus.rag.embed import Embedder
@@ -48,6 +52,7 @@ from argus.runs import (
     upsert_tenant,
 )
 from argus.steps import BudgetExceededError, NonDeterminismError, StepOutcome, StepRunner
+from argus.telemetry import span
 from argus.tools.hub import POLICIES, REDUCED_TOOLS, ToolHub
 
 log = logging.getLogger("argus.agents.pr_review")
@@ -161,6 +166,16 @@ class SupersededError(Exception):
 
 
 async def handle_review_message(deps: ReviewDeps, msg: Message) -> None:
+    started = time.monotonic()
+    with span(f"agent.run {AGENT_TYPE}") as s:
+        outcome = await _handle(deps, msg)
+        s.set_attribute("argus.outcome", outcome)
+    RUNS.labels(AGENT_TYPE, outcome).inc()
+    if outcome in {"succeeded", "failed", "cancelled", "superseded"}:
+        RUN_DURATION.labels(AGENT_TYPE).observe(time.monotonic() - started)
+
+
+async def _handle(deps: ReviewDeps, msg: Message) -> str:
     event_id = await _resolve_event_id(deps, msg.json())
     payload_json = await deps.pool.fetchval(
         "SELECT payload::text FROM events WHERE id = $1", event_id
@@ -185,21 +200,28 @@ async def handle_review_message(deps: ReviewDeps, msg: Message) -> None:
         head_sha=pr.head_sha,
     )
     ctx = {"run_id": str(run.id)}
+    run_id_var.set(str(run.id))
+    tenant_id_var.set(str(tenant_id))
+    current = trace.get_current_span()
+    current.set_attribute("argus.run_id", str(run.id))
+    current.set_attribute("argus.tenant_id", str(tenant_id))
+    current.set_attribute("github.repo", pr.repo_full_name)
+    current.set_attribute("github.pr", pr.number)
     if run.status in TERMINAL:
         log.info("run already finished", extra={**ctx, "status": run.status})
         await _mark_event(deps.pool, event_id, "processed")
-        return
+        return "already_finished"
     newer = await newer_run_id(deps.pool, run.id)
     if newer is not None and await supersede_queued(deps.pool, run.id, newer):
         log.info("run superseded before start", extra={**ctx, "newer": str(newer)})
         await _mark_event(deps.pool, event_id, "processed")
-        return
+        return "superseded"
     lease = await claim_run(deps.pool, run.id, deps.worker_id, deps.lease_s)
     if lease is None:
         # A live worker holds the lease. Safe to drop this message: if that worker dies,
         # the run reaper re-enqueues the run once the lease expires.
         log.info("run held by another worker", extra=ctx)
-        return
+        return "held_elsewhere"
 
     lock = OwnedLock(deps.redis, pr_lock_key(repo_id, pr.number), str(run.id), deps.lease_s)
     holder = await lock.acquire()
@@ -224,7 +246,7 @@ async def handle_review_message(deps: ReviewDeps, msg: Message) -> None:
             decision="info",
         )
         log.info("review waiting for approval", extra={**ctx, "approval": str(exc.approval_id)})
-        return
+        return "waiting_approval"
     except SupersededError as exc:
         await finish_run(deps.pool, lease, "superseded", result={"superseded_by": str(exc.newer)})
         outcome = "superseded"
@@ -239,6 +261,7 @@ async def handle_review_message(deps: ReviewDeps, msg: Message) -> None:
         await lock.release()
     await _mark_event(deps.pool, event_id, "processed")
     log.info("review finished", extra={**ctx, "outcome": outcome})
+    return outcome
 
 
 async def _review(
