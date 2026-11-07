@@ -1,8 +1,9 @@
-"""PR review agent (M1: one LLM call → one PR comment).
+"""PR review agent: diff → one LLM call → one PR comment, as checkpointed steps.
 
 Flow for a ``jobs:review`` message:
 event → tenant/repo upsert → run keyed on (tenant, repo, pr, head_sha) → lease →
-fetch diff → LLM → post comment exactly once (side-effect ledger + hidden marker) →
+PR lock → steps (fetch diff, LLM, post comment exactly once via the side-effect ledger
+and a hidden marker), checking between steps whether a newer push superseded the run →
 fenced completion.
 """
 
@@ -14,23 +15,28 @@ from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
+from redis.asyncio import Redis
 
 from argus.github.client import GitHubClient
 from argus.llm.client import LLMClient
+from argus.locks import OwnedLock, pr_lock_key
 from argus.queue.consumer import PermanentError
 from argus.queue.streams import Message
 from argus.runs import (
     TERMINAL,
     Lease,
+    LeaseKeeper,
     LeaseLostError,
-    add_usage,
     claim_run,
     finish_run,
     get_or_create_run,
+    newer_run_id,
     release_run,
+    supersede_queued,
     upsert_repo,
     upsert_tenant,
 )
+from argus.steps import BudgetExceededError, NonDeterminismError, StepOutcome, StepRunner
 from argus.tools.idempotency import perform_once
 
 log = logging.getLogger("argus.agents.pr_review")
@@ -51,8 +57,9 @@ class ReviewDeps:
     pool: asyncpg.Pool
     github: GitHubClient
     llm: LLMClient
+    redis: Redis
     worker_id: str
-    lease_s: float = 180.0
+    lease_s: float = 30.0  # short: LeaseKeeper renews it every lease_s / 3
     max_diff_chars: int = 60_000
     side_effect_stale_s: float = 120.0
 
@@ -137,6 +144,17 @@ async def _resolve_event_id(deps: ReviewDeps, data: dict[str, Any]) -> uuid.UUID
     return event_id
 
 
+class PrBusyError(Exception):
+    """Another run of this PR holds the PR lock. Retryable: that run either finishes
+    or notices it was superseded and stops."""
+
+
+class SupersededError(Exception):
+    def __init__(self, newer: uuid.UUID) -> None:
+        super().__init__(f"superseded by run {newer}")
+        self.newer = newer
+
+
 async def handle_review_message(deps: ReviewDeps, msg: Message) -> None:
     event_id = await _resolve_event_id(deps, msg.json())
     payload_json = await deps.pool.fetchval(
@@ -161,25 +179,47 @@ async def handle_review_message(deps: ReviewDeps, msg: Message) -> None:
         pr_number=pr.number,
         head_sha=pr.head_sha,
     )
+    ctx = {"run_id": str(run.id)}
     if run.status in TERMINAL:
-        log.info("run already finished", extra={"run_id": str(run.id), "status": run.status})
+        log.info("run already finished", extra={**ctx, "status": run.status})
+        await _mark_event(deps.pool, event_id, "processed")
+        return
+    newer = await newer_run_id(deps.pool, run.id)
+    if newer is not None and await supersede_queued(deps.pool, run.id, newer):
+        log.info("run superseded before start", extra={**ctx, "newer": str(newer)})
         await _mark_event(deps.pool, event_id, "processed")
         return
     lease = await claim_run(deps.pool, run.id, deps.worker_id, deps.lease_s)
     if lease is None:
         # A live worker holds the lease. Safe to drop this message: if that worker dies,
         # the run reaper re-enqueues the run once the lease expires.
-        log.info("run held by another worker", extra={"run_id": str(run.id)})
+        log.info("run held by another worker", extra=ctx)
         return
+
+    lock = OwnedLock(deps.redis, pr_lock_key(repo_id, pr.number), str(run.id), deps.lease_s)
+    holder = await lock.acquire()
+    if holder is not None:
+        await release_run(deps.pool, lease, f"PR busy with run {holder}")
+        raise PrBusyError(f"PR {pr.repo_full_name}#{pr.number} busy with run {holder}")
     try:
-        comment_id = await _review(deps, pr, tenant_id, run.id, key, lease)
+        async with LeaseKeeper(deps.pool, lease, deps.lease_s, also_renew=lock.renew):
+            outcome = await _review(deps, pr, tenant_id, run.id, key, lease)
     except LeaseLostError:
         raise
+    except SupersededError as exc:
+        await finish_run(deps.pool, lease, "superseded", result={"superseded_by": str(exc.newer)})
+        outcome = "superseded"
+    except (BudgetExceededError, NonDeterminismError) as exc:
+        # Retrying cannot help: fail the run and ack the message.
+        await finish_run(deps.pool, lease, "failed", error=str(exc))
+        outcome = "failed"
     except Exception as exc:
         await release_run(deps.pool, lease, f"{type(exc).__name__}: {exc}")
         raise
+    finally:
+        await lock.release()
     await _mark_event(deps.pool, event_id, "processed")
-    log.info("review posted", extra={"run_id": str(run.id), "comment_id": comment_id})
+    log.info("review finished", extra={**ctx, "outcome": outcome})
 
 
 async def _review(
@@ -190,12 +230,40 @@ async def _review(
     key: str,
     lease: Lease,
 ) -> str:
-    diff = await deps.github.get_pr_diff(pr.installation_id, pr.repo_full_name, pr.number)
-    result = await deps.llm.chat(build_messages(pr, diff, deps.max_diff_chars))
-    await add_usage(deps.pool, lease, result.input_tokens, result.output_tokens)
+    """The review as checkpointed steps. After a crash, completed steps replay from
+    ``run_steps``; the comment is guarded by the side-effect ledger and its marker."""
+    steps = StepRunner(deps.pool, lease)
+    ref = {"repo": pr.repo_full_name, "pr": pr.number, "head_sha": pr.head_sha}
+
+    async def check_superseded() -> None:
+        newer = await newer_run_id(deps.pool, run_id)
+        if newer is not None:
+            raise SupersededError(newer)
+
+    async def fetch_diff() -> StepOutcome:
+        diff = await deps.github.get_pr_diff(pr.installation_id, pr.repo_full_name, pr.number)
+        return StepOutcome(output=diff)
+
+    diff: str = await steps.step("tool_call", "github.get_pr_diff", ref, fetch_diff)
+    await check_superseded()
+
+    messages = build_messages(pr, diff, deps.max_diff_chars)
+
+    async def call_llm() -> StepOutcome:
+        res = await deps.llm.chat(messages)
+        return StepOutcome(
+            output={"content": res.content, "model": res.model},
+            input_tokens=res.input_tokens,
+            output_tokens=res.output_tokens,
+        )
+
+    review: dict[str, str] = await steps.step(
+        "llm_call", deps.llm.model, {"messages": messages}, call_llm
+    )
+    await check_superseded()
 
     marker = comment_marker(key)
-    body = render_comment(result.content, pr, marker)
+    body = render_comment(review["content"], pr, marker)
 
     async def post() -> str:
         comment = await deps.github.create_issue_comment(
@@ -212,28 +280,35 @@ async def _review(
                 return str(c["id"])
         return None
 
-    effect = await perform_once(
-        deps.pool,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        key=f"{key}:comment",
-        kind="github.issue_comment",
-        perform=post,
-        find_existing=find_existing,
-        lease_version=lease.version,
-        stale_after_s=deps.side_effect_stale_s,
+    async def post_once() -> StepOutcome:
+        effect = await perform_once(
+            deps.pool,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            key=f"{key}:comment",
+            kind="github.issue_comment",
+            perform=post,
+            find_existing=find_existing,
+            lease_version=lease.version,
+            stale_after_s=deps.side_effect_stale_s,
+        )
+        return StepOutcome(output={"id": effect.external_id, "reused": not effect.performed})
+
+    comment: dict[str, Any] = await steps.step(
+        "tool_call", "github.create_issue_comment", {**ref, "marker": marker}, post_once
     )
     await finish_run(
         deps.pool,
         lease,
         "succeeded",
         result={
-            "comment_id": effect.external_id,
-            "model": result.model,
-            "comment_reused": not effect.performed,
+            "comment_id": comment["id"],
+            "model": review["model"],
+            "comment_reused": comment["reused"],
+            "steps_replayed": steps.replayed,
         },
     )
-    return effect.external_id
+    return "succeeded"
 
 
 async def _mark_event(pool: asyncpg.Pool, event_id: uuid.UUID, status: str) -> None:

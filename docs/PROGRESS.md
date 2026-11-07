@@ -2,7 +2,9 @@
 
 ## Current milestone
 
-**M1 · Webhook to review comment**: code complete (M1a merged as `v0.1.0`, M1b in review). The live "done when" (install the App → a review appears) is waiting on the VPS and GitHub App (blockers below).
+**M2 · Durable agent runtime**: M2a (checkpointed steps, heartbeats, supersede, budgets, DLQ replay) in review; M2b (tool-calling loop over MCP) next.
+
+M1's live "done when" (install the App → a review appears) is still waiting on the VPS and GitHub App (blockers below).
 
 ## Done
 
@@ -34,9 +36,19 @@
 - Self-healing (ADR 0005): in-process failures release the lease; a run reaper requeues expired leases through the outbox and bumps the fencing token.
 - Tests (98 total): replayed and duplicate deliveries → 1 comment; relay republish harmless; 3 concurrent workers → 1 comment; LLM outage retried; lost response after comment creation → no duplicate (marker found); `kill -9` mid-run → reaper recovers, 1 comment; malformed event → DLQ.
 
+### M2a · Durable runtime core
+- `run_steps` (migration 0004): each LLM/tool step is written `started` (fenced on `lease_version`), executed, then marked `done` with output and tokens in one fenced transaction. On resume, `done` steps replay from storage; a changed input hash is a `NonDeterminismError`.
+- Short lease (30 s) renewed by `LeaseKeeper` every 10 s; a lost lease is detected and every later write is fenced off.
+- Budgets per run (`max_steps`, `max_tokens`, `deadline_at`) checked before each step; exceeding one fails the run without retrying.
+- PR review rewritten as three steps (fetch diff → LLM → post comment via the side-effect ledger).
+- Supersede: between steps a run checks for a newer run of the same PR (ordered by the trigger's first receipt) and stops as `superseded`; a stale queued run is superseded before it starts. Owner-checked Redis lock per (repo, PR) keeps one live review.
+- DLQ: `GET /admin/dlq/{topic}`, `POST /admin/dlq/{topic}/replay` (ids or all), atomic Lua move, guarded by `ARGUS_ADMIN_TOKEN`.
+- ADR 0006: build the runtime on Postgres vs adopt Temporal, and when we would switch.
+- Tests (113 total): crash between steps replays without re-calling the LLM; crash mid-step re-executes; zombie cannot start or finish a step; heartbeat keeps a 0.6 s lease alive for 1.5 s; `kill -9` while posting the comment → reaper → resume replays 2 steps, 1 comment; new push mid-review → old run superseded, PR lock busy until it stops, 1 comment for the new SHA; late old message superseded before starting; step budget fails the run; 8 concurrent DLQ replays enqueue each entry once.
+
 ## Next
 
-- **M2 · Durable agent runtime:** `run_steps` checkpointing (replay completed steps on resume), lease heartbeats with a short lease, tool-calling loop over MCP (`argus-code`, `argus-github` servers, per-agent allowlists), supersede on a newer head SHA with a Redis lock per (repo, pr), DLQ replay endpoint, run budgets (max steps/tokens/deadline), ADR build vs Temporal.
+- **M2b · Tool-calling loop over MCP:** `argus-code` and `argus-github` MCP servers (official SDK), the agent runtime as MCP client, per-agent tool allowlists with read/write tags, write tools keyed by step through the side-effect ledger. The review agent moves from a fixed pipeline to an LLM-driven tool loop (mock LLM gains tool calls).
 
 ## Blockers waiting on the owner
 

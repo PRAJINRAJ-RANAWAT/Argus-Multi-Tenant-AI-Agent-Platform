@@ -8,13 +8,19 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any
 
 import asyncpg
 import httpx
 import pytest
 from redis.asyncio import Redis
 
-from argus.agents.pr_review import ReviewDeps, comment_marker, handle_review_message
+from argus.agents.pr_review import (
+    PrBusyError,
+    ReviewDeps,
+    comment_marker,
+    handle_review_message,
+)
 from argus.config import Settings
 from argus.db.pool import create_pool
 from argus.github.client import GitHubClient
@@ -24,7 +30,7 @@ from argus.mock_llm.app import Faults
 from argus.mock_llm.app import create_app as create_mock_llm
 from argus.queue.consumer import handle_one, run_consumer
 from argus.queue.relay import relay_once
-from argus.queue.streams import StreamQueue
+from argus.queue.streams import Message, StreamQueue
 from argus.queue.topics import JOBS_REVIEW
 from argus.runs import reap_runs
 from tests.conftest import WEBHOOK_SECRET, app_client
@@ -107,6 +113,7 @@ async def env(
             pool=pool,
             github=GitHubClient(gh_http, token, GITHUB_API),
             llm=LLMClient(llm_http, base_url="http://llm/v1", api_key="k", model="mock-large"),
+            redis=redis,
             worker_id="w1",
         )
         yield Env(pool, redis, gh, mock_llm.state.faults, deps, settings)
@@ -260,4 +267,134 @@ async def test_malformed_event_is_dead_lettered(env: Env) -> None:
     await env.deliver(bad)
     assert await env.drain() == ["dead"]
     assert await env.redis.xlen(f"{JOBS_REVIEW}:dlq") == 1
+    assert env.comments() == []
+
+
+class GatedGitHub(GitHubClient):
+    """Blocks a chosen call until the test opens the gate."""
+
+    def __init__(self, base: GitHubClient, *, hang_on: str) -> None:
+        super().__init__(base.http, base.tokens, GITHUB_API)
+        self.hang_on = hang_on
+        self.entered = asyncio.Event()
+        self.gate = asyncio.Event()
+
+    async def _maybe_hang(self, name: str) -> None:
+        if name == self.hang_on:
+            self.entered.set()
+            await self.gate.wait()
+
+    async def get_pr_diff(self, installation_id: int, repo: str, number: int) -> str:
+        await self._maybe_hang("get_pr_diff")
+        return await super().get_pr_diff(installation_id, repo, number)
+
+    async def create_issue_comment(
+        self, installation_id: int, repo: str, number: int, body: str
+    ) -> dict[str, Any]:
+        await self._maybe_hang("create_issue_comment")
+        return await super().create_issue_comment(installation_id, repo, number, body)
+
+
+SHA_A, SHA_B = "a" * 40, "b" * 40
+
+
+async def _read_one(env: Env, consumer: str) -> Message:
+    q = env.queue(consumer)
+    await q.ensure_group()
+    [m] = await q.read(count=1, block_ms=10)
+    return m
+
+
+async def test_kill_after_llm_step_resumes_without_recalling_llm_or_duplicating(
+    env: Env,
+) -> None:
+    await env.deliver(pr_payload())
+    m = await _read_one(env, "doomed")
+    gh = GatedGitHub(env.deps.github, hang_on="create_issue_comment")
+    doomed = ReviewDeps(**{**env.deps.__dict__, "worker_id": "doomed", "lease_s": 0.3})
+    doomed.github = gh
+    task = asyncio.create_task(handle_review_message(doomed, m))
+    await asyncio.wait_for(gh.entered.wait(), timeout=5)
+    task.cancel()  # kill -9 while the comment call is in flight
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    await asyncio.sleep(0.4)  # heartbeat died with the task; the short lease lapses
+    assert await reap_runs(env.pool, {"pr_review": JOBS_REVIEW}) == 1
+    while await relay_once(env.pool, env.redis):
+        pass
+    assert await env.drain("live") == ["acked"]
+
+    assert len(env.comments()) == 1
+    steps = await env.pool.fetch("SELECT seq, kind, status, attempts FROM run_steps ORDER BY seq")
+    assert [(s["kind"], s["status"], s["attempts"]) for s in steps] == [
+        ("tool_call", "done", 1),  # diff: replayed, not refetched
+        ("llm_call", "done", 1),  # LLM: replayed, not re-billed
+        ("tool_call", "done", 2),  # comment step re-run, guarded by the ledger
+    ]
+    run = await env.pool.fetchrow("SELECT status, result FROM runs")
+    assert run["status"] == "succeeded"
+    assert json.loads(run["result"])["steps_replayed"] == 2
+
+
+async def test_new_push_supersedes_running_review(env: Env) -> None:
+    await env.deliver(pr_payload(head_sha=SHA_A))
+    m_a = await _read_one(env, "wa")
+    gh = GatedGitHub(env.deps.github, hang_on="get_pr_diff")
+    deps_a = ReviewDeps(**{**env.deps.__dict__, "worker_id": "wa"})
+    deps_a.github = gh
+    task_a = asyncio.create_task(handle_review_message(deps_a, m_a))
+    await asyncio.wait_for(gh.entered.wait(), timeout=5)
+
+    # A new push arrives while run A is mid-review. Run B finds the PR locked.
+    await env.deliver(pr_payload(action="synchronize", head_sha=SHA_B))
+    m_b = await _read_one(env, "wb")
+    with pytest.raises(PrBusyError):
+        await handle_review_message(ReviewDeps(**{**env.deps.__dict__, "worker_id": "wb"}), m_b)
+
+    gh.gate.set()  # run A wakes, sees run B at its next step boundary, and stops
+    await task_a
+    await handle_review_message(ReviewDeps(**{**env.deps.__dict__, "worker_id": "wb"}), m_b)
+
+    rows = await env.pool.fetch("SELECT head_sha, status FROM runs ORDER BY created_at")
+    assert [(r["head_sha"], r["status"]) for r in rows] == [
+        (SHA_A, "superseded"),
+        (SHA_B, "succeeded"),
+    ]
+    [comment] = env.comments()
+    assert SHA_B[:12] in comment["body"]
+    assert await env.redis.keys("lock:pr:*") == []
+
+
+async def test_stale_run_is_superseded_before_it_starts(env: Env) -> None:
+    await env.deliver(pr_payload(head_sha=SHA_A))
+    m_a = await _read_one(env, "w1")
+    await env.deliver(pr_payload(action="synchronize", head_sha=SHA_B))
+    m_b = await _read_one(env, "w1")
+    # The newer push is processed first; the older message arrives late.
+    await handle_review_message(env.deps, m_b)
+    await handle_review_message(env.deps, m_a)
+    rows = await env.pool.fetch("SELECT head_sha, status FROM runs ORDER BY head_sha")
+    assert [(r["head_sha"], r["status"]) for r in rows] == [
+        (SHA_A, "superseded"),
+        (SHA_B, "succeeded"),
+    ]
+    assert len(env.comments()) == 1
+    stale_steps = await env.pool.fetchval(
+        "SELECT count(*) FROM run_steps s JOIN runs r ON r.id = s.run_id WHERE r.head_sha = $1",
+        SHA_A,
+    )
+    assert stale_steps == 0
+
+
+async def test_step_budget_fails_run_without_retry_or_comment(env: Env) -> None:
+    await env.pool.execute("ALTER TABLE runs ALTER COLUMN max_steps SET DEFAULT 2")
+    try:
+        await env.deliver(pr_payload())
+        assert await env.drain() == ["acked"]
+    finally:
+        await env.pool.execute("ALTER TABLE runs ALTER COLUMN max_steps SET DEFAULT 25")
+    run = await env.pool.fetchrow("SELECT status, error FROM runs")
+    assert run["status"] == "failed"
+    assert "max_steps" in run["error"]
     assert env.comments() == []

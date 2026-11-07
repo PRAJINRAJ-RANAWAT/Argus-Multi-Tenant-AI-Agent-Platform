@@ -1,11 +1,17 @@
 """Run persistence: idempotent creation, lease claim with fencing, fenced completion."""
 
+import asyncio
+import contextlib
 import json
+import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
+
+log = logging.getLogger("argus.runs")
 
 TERMINAL = frozenset({"succeeded", "failed", "cancelled", "superseded"})
 
@@ -237,3 +243,117 @@ async def finish_run(
     )
     if tag != "UPDATE 1":
         raise LeaseLostError(str(lease.run_id))
+
+
+async def renew_lease(pool: asyncpg.Pool, lease: Lease, lease_s: float) -> bool:
+    """Extend the lease if this worker still holds it (fenced). False = lease lost."""
+    tag = await pool.execute(
+        """
+        UPDATE runs SET lease_expires_at = now() + make_interval(secs => $3), updated_at = now()
+        WHERE id = $1 AND lease_version = $2 AND status = 'running'
+        """,
+        lease.run_id,
+        lease.version,
+        lease_s,
+    )
+    return bool(tag == "UPDATE 1")
+
+
+class LeaseKeeper:
+    """Background heartbeat: renews a short lease every ``lease_s / 3`` seconds.
+
+    Use as ``async with LeaseKeeper(pool, lease, lease_s) as keeper:``. If a renewal finds
+    the lease gone (reaped, superseded), ``keeper.lost`` is set and renewals stop; every
+    fenced write fails with ``LeaseLostError`` from then on. Transient DB errors are
+    retried on the next tick; if they last past the lease, the reaper takes over.
+    """
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        lease: Lease,
+        lease_s: float,
+        *,
+        also_renew: Callable[[], Awaitable[object]] | None = None,
+    ) -> None:
+        self.pool = pool
+        self.lease = lease
+        self.lease_s = lease_s
+        self.also_renew = also_renew  # e.g. a Redis lock with the same TTL
+        self.interval_s = lease_s / 3
+        self.lost = asyncio.Event()
+        self.renewals = 0
+        self._task: asyncio.Task[None] | None = None
+
+    async def _beat(self) -> None:
+        while True:
+            await asyncio.sleep(self.interval_s)
+            try:
+                ok = await renew_lease(self.pool, self.lease, self.lease_s)
+            except Exception:
+                log.warning(
+                    "lease renewal failed", exc_info=True, extra={"run_id": str(self.lease.run_id)}
+                )
+                continue
+            if not ok:
+                log.warning("lease lost", extra={"run_id": str(self.lease.run_id)})
+                self.lost.set()
+                return
+            self.renewals += 1
+            if self.also_renew is not None:
+                try:
+                    await self.also_renew()
+                except Exception:
+                    log.warning("lock renewal failed", exc_info=True)
+
+    async def __aenter__(self) -> "LeaseKeeper":
+        self._task = asyncio.create_task(self._beat())
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+
+
+async def newer_run_id(pool: asyncpg.Pool, run_id: uuid.UUID) -> uuid.UUID | None:
+    """A run of the same agent for the same PR at a different head SHA whose trigger
+    arrived later than this one's. Its existence means this run is stale.
+
+    Ordered by the trigger event's ``received_at`` (the first delivery's time: a
+    redelivered old push keeps its original row, so it never supersedes a newer one),
+    with the run's ``created_at`` as fallback and the id as a deterministic tie-break.
+    """
+    newer: uuid.UUID | None = await pool.fetchval(
+        """
+        SELECT o.id
+        FROM runs r
+        JOIN runs o ON o.repo_id = r.repo_id AND o.pr_number = r.pr_number
+                   AND o.agent_type = r.agent_type AND o.id <> r.id
+                   AND o.head_sha IS DISTINCT FROM r.head_sha
+        LEFT JOIN events re ON re.id = r.trigger_event_id
+        LEFT JOIN events oe ON oe.id = o.trigger_event_id
+        WHERE r.id = $1 AND r.pr_number IS NOT NULL
+          AND (coalesce(oe.received_at, o.created_at), o.id)
+            > (coalesce(re.received_at, r.created_at), r.id)
+        ORDER BY coalesce(oe.received_at, o.created_at) DESC
+        LIMIT 1
+        """,
+        run_id,
+    )
+    return newer
+
+
+async def supersede_queued(pool: asyncpg.Pool, run_id: uuid.UUID, newer: uuid.UUID) -> bool:
+    """Mark a run nobody holds as superseded (no lease needed: it is not running)."""
+    tag = await pool.execute(
+        """
+        UPDATE runs SET status = 'superseded', finished_at = now(), updated_at = now(),
+                        result = jsonb_build_object('superseded_by', $2::text)
+        WHERE id = $1 AND status = 'queued'
+        """,
+        run_id,
+        str(newer),
+    )
+    return bool(tag == "UPDATE 1")
