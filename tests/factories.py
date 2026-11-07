@@ -57,3 +57,50 @@ def signed_request(
         "x-hub-signature-256": sign(secret, body),
     }
     return body, headers
+
+
+def push_payload(
+    *,
+    installation_id: int = 1001,
+    repo_id: int = 5001,
+    repo: str = "acme/widgets",
+    after: str = "d" * 40,
+    ref: str = "refs/heads/main",
+    added: list[str] | None = None,
+    modified: list[str] | None = None,
+    removed: list[str] | None = None,
+    commits: int = 1,
+) -> dict[str, Any]:
+    owner = repo.split("/")[0]
+    commit = {"added": added or [], "modified": modified or [], "removed": removed or []}
+    return {
+        "ref": ref,
+        "before": "0" * 40,
+        "after": after,
+        "deleted": False,
+        "forced": False,
+        "commits": [commit] + [{"added": [], "modified": [], "removed": []}] * (commits - 1),
+        "repository": {
+            "id": repo_id,
+            "full_name": repo,
+            "private": True,
+            "default_branch": "main",
+            "owner": {"login": owner, "name": owner, "id": 9001},
+        },
+        "installation": {"id": installation_id},
+        "sender": {"login": "octocat", "id": 1},
+    }
+
+
+def installation_payload(
+    *, installation_id: int = 1001, account: str = "acme", repos: list[tuple[int, str]]
+) -> dict[str, Any]:
+    return {
+        "action": "created",
+        "installation": {"id": installation_id, "account": {"login": account, "id": 9001}},
+        "repositories": [
+            {"id": rid, "full_name": name, "name": name.split("/")[1], "private": True}
+            for rid, name in repos
+        ],
+        "sender": {"login": "octocat", "id": 1},
+    }

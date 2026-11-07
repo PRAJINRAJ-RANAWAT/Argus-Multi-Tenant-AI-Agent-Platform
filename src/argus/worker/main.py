@@ -1,4 +1,4 @@
-"""Worker process: consumes ``jobs:review`` and runs the PR review agent."""
+"""Worker process: ``jobs:review`` (PR review agent) and ``jobs:index`` (code indexing)."""
 
 import asyncio
 import contextlib
@@ -22,12 +22,15 @@ from argus.llm.client import LLMClient
 from argus.logging import configure_logging
 from argus.queue.consumer import run_consumer
 from argus.queue.streams import StreamQueue
-from argus.queue.topics import JOBS_REVIEW
+from argus.queue.topics import JOBS_INDEX, JOBS_REVIEW
+from argus.rag.embed import HttpEmbedder
+from argus.rag.jobs import IndexDeps, handle_index_message
 from argus.runs import reap_runs
 
 log = logging.getLogger("argus.worker")
 
 REVIEW_GROUP = "review-workers"
+INDEX_GROUP = "index-workers"
 REAP_INTERVAL_S = 10.0
 TOPIC_FOR_AGENT = {PR_REVIEW: JOBS_REVIEW}
 
@@ -74,15 +77,39 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
             redis=redis,
             worker_id=worker_id,
         )
-        queue = StreamQueue(redis, JOBS_REVIEW, REVIEW_GROUP, worker_id)
-        log.info("worker started", extra={"worker_id": worker_id, "stream": JOBS_REVIEW})
+        index_deps = IndexDeps(
+            pool=pool,
+            github=deps.github,
+            embedder=HttpEmbedder(
+                http,
+                base_url=settings.embed_base_url or settings.llm_base_url,
+                api_key=(
+                    settings.embed_api_key.get_secret_value()
+                    or settings.llm_api_key.get_secret_value()
+                ),
+                model=settings.embed_model,
+            ),
+        )
+        review_q = StreamQueue(redis, JOBS_REVIEW, REVIEW_GROUP, worker_id)
+        index_q = StreamQueue(redis, JOBS_INDEX, INDEX_GROUP, worker_id)
+        log.info(
+            "worker started", extra={"worker_id": worker_id, "streams": [JOBS_REVIEW, JOBS_INDEX]}
+        )
         reaper = asyncio.create_task(reaper_loop(pool, stop, REAP_INTERVAL_S))
         try:
-            await run_consumer(
-                queue,
-                functools.partial(handle_review_message, deps),
-                stop,
-                concurrency=settings.worker_concurrency,
+            await asyncio.gather(
+                run_consumer(
+                    review_q,
+                    functools.partial(handle_review_message, deps),
+                    stop,
+                    concurrency=settings.worker_concurrency,
+                ),
+                run_consumer(
+                    index_q,
+                    functools.partial(handle_index_message, index_deps),
+                    stop,
+                    concurrency=settings.index_concurrency,
+                ),
             )
         finally:
             log.info("worker stopping")

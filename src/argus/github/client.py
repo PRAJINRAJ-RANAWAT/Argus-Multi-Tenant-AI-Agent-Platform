@@ -118,3 +118,31 @@ class GitHubClient:
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
         return data
+
+    async def get_repo(self, installation_id: int, repo: str) -> dict[str, Any]:
+        resp = await self.http.get(
+            f"{self.api_url}/repos/{repo}",
+            headers=await self._headers(installation_id, "application/vnd.github+json"),
+        )
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def get_branch_sha(self, installation_id: int, repo: str, branch: str) -> str:
+        resp = await self.http.get(
+            f"{self.api_url}/repos/{repo}/branches/{branch}",
+            headers=await self._headers(installation_id, "application/vnd.github+json"),
+        )
+        resp.raise_for_status()
+        return str(resp.json()["commit"]["sha"])
+
+    async def get_tree(self, installation_id: int, repo: str, sha: str) -> list[dict[str, Any]]:
+        """Blobs of the recursive tree at ``sha``: [{path, size, type}]."""
+        resp = await self.http.get(
+            f"{self.api_url}/repos/{repo}/git/trees/{sha}",
+            params={"recursive": "1"},
+            headers=await self._headers(installation_id, "application/vnd.github+json"),
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        return [t for t in body.get("tree", []) if t.get("type") == "blob"]

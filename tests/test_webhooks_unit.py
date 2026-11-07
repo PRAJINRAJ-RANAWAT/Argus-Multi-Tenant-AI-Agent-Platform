@@ -43,3 +43,17 @@ def test_review_actions_routed(action: str) -> None:
 )
 def test_other_events_ignored(event: str, payload: dict[str, object]) -> None:
     assert route_github_event(event, payload) is None
+
+
+def test_index_routing() -> None:
+    from argus.queue.topics import JOBS_INDEX
+    from tests.factories import installation_payload, push_payload
+
+    assert route_github_event("push", push_payload()) == JOBS_INDEX
+    assert route_github_event("push", push_payload(ref="refs/heads/feature")) is None
+    deleted = {**push_payload(), "deleted": True}
+    assert route_github_event("push", deleted) is None
+    assert route_github_event("installation", installation_payload(repos=[])) == JOBS_INDEX
+    added = {"action": "added", "repositories_added": []}
+    assert route_github_event("installation_repositories", added) == JOBS_INDEX
+    assert route_github_event("installation", {"action": "deleted"}) is None
