@@ -17,8 +17,13 @@ import asyncpg
 from redis.asyncio import Redis
 
 from argus.agents.toolloop import audit_hook, run_tool_loop
+from argus.approvals import WaitingForApprovalError, approval_gate, park_run, required_tools
+from argus.auth import audit
 from argus.gateway import TenantBudgetExceededError
 from argus.github.client import GitHubClient
+from argus.guardrails.injection import Verdict, neutralise_wrapper
+from argus.guardrails.output import scan
+from argus.guardrails.runtime import InjectionGuard
 from argus.llm.client import ModelSource
 from argus.locks import OwnedLock, pr_lock_key
 from argus.mcp_servers import RunContext
@@ -43,7 +48,7 @@ from argus.runs import (
     upsert_tenant,
 )
 from argus.steps import BudgetExceededError, NonDeterminismError, StepOutcome, StepRunner
-from argus.tools.hub import POLICIES, ToolHub
+from argus.tools.hub import POLICIES, REDUCED_TOOLS, ToolHub
 
 log = logging.getLogger("argus.agents.pr_review")
 
@@ -113,8 +118,8 @@ def build_messages(pr: PullRequestRef) -> list[dict[str, Any]]:
     user = (
         f"Review pull request #{pr.number} in {pr.repo_full_name} at {pr.head_sha[:12]}.\n\n"
         "<untrusted_data>\n"
-        f"<pr_title>{pr.title}</pr_title>\n"
-        f"<pr_description>{pr.body}</pr_description>\n"
+        f"<pr_title>{neutralise_wrapper(pr.title)}</pr_title>\n"
+        f"<pr_description>{neutralise_wrapper(pr.body)}</pr_description>\n"
         "</untrusted_data>"
     )
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
@@ -206,6 +211,20 @@ async def handle_review_message(deps: ReviewDeps, msg: Message) -> None:
             outcome = await _review(deps, pr, tenant_id, repo_id, run.id, key, lease)
     except LeaseLostError:
         raise
+    except WaitingForApprovalError as exc:
+        # Park without holding anything; a decision re-queues the run.
+        await park_run(deps.pool, lease)
+        await audit(
+            deps.pool,
+            tenant_id,
+            actor_type="agent",
+            actor_id=f"{AGENT_TYPE}:{run.id}",
+            action="approval.requested",
+            target=str(exc.approval_id),
+            decision="info",
+        )
+        log.info("review waiting for approval", extra={**ctx, "approval": str(exc.approval_id)})
+        return
     except SupersededError as exc:
         await finish_run(deps.pool, lease, "superseded", result={"superseded_by": str(exc.newer)})
         outcome = "superseded"
@@ -256,8 +275,22 @@ async def _review(
         if newer is not None:
             raise SupersededError(newer)
 
+    async def flagged(source: str, verdict: Verdict) -> None:
+        await audit(
+            deps.pool,
+            tenant_id,
+            actor_type="agent",
+            actor_id=f"{AGENT_TYPE}:{run_id}",
+            action="guardrail.injection",
+            target=source,
+            decision="info",
+            details={"rules": list(verdict.rules), "score": verdict.score},
+        )
+
     servers = [build_code_server(ctx), build_github_server(ctx)]
     async with ToolHub(servers, POLICIES[AGENT_TYPE]) as hub:
+        guard = InjectionGuard(hub, REDUCED_TOOLS[AGENT_TYPE], flagged)
+        await guard.inspect("pr_description", pr.title, pr.body)
         final = await run_tool_loop(
             steps,
             deps.llm.for_run(tenant_id, run_id, AGENT_TYPE),
@@ -265,8 +298,56 @@ async def _review(
             build_messages(pr),
             between_steps=check_superseded,
             on_tool_decision=audit_hook(deps.pool, tenant_id, AGENT_TYPE, run_id),
+            on_tool_result=lambda tool, text: guard.inspect(f"tool:{tool}", text),
         )
-        body = render_comment(final.get("content") or "", pr)
+        review, echoes = guard.strip_echoes(final.get("content") or "")
+        if guard.flagged:
+            review = f"{guard.warning()}\n\n{review}"
+        scanned = scan(render_comment(review, pr))
+        body = scanned.text
+        if scanned.findings:
+            await audit(
+                deps.pool,
+                tenant_id,
+                actor_type="agent",
+                actor_id=f"{AGENT_TYPE}:{run_id}",
+                action="guardrail.output",
+                target="post_review_comment",
+                decision="info",
+                details={"redacted": scanned.findings},
+            )
+
+        if "post_review_comment" in await required_tools(deps.pool, tenant_id):
+
+            async def gate() -> StepOutcome:
+                decision = await approval_gate(
+                    deps.pool,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    step_key="post_review_comment",
+                    tool="post_review_comment",
+                    preview={"repo": pr.repo_full_name, "pr": pr.number, "body": body[:4000]},
+                )
+                return StepOutcome(output=decision)
+
+            decision: dict[str, Any] = await steps.step(
+                "approval",
+                "post_review_comment",
+                {"repo": pr.repo_full_name, "pr": pr.number, "head_sha": pr.head_sha},
+                gate,
+            )
+            if not decision["approved"]:
+                await finish_run(
+                    deps.pool,
+                    lease,
+                    "cancelled",
+                    result={
+                        "approval": "rejected",
+                        "by": decision["by"],
+                        "reason": decision["reason"],
+                    },
+                )
+                return "cancelled"
 
         async def post() -> StepOutcome:
             out = await hub.call(
@@ -292,6 +373,11 @@ async def _review(
             "comment_reused": comment["reused"],
             "steps_replayed": steps.replayed,
             "steps": steps.seq,
+            "guardrails": {
+                **guard.summary(),
+                "output_redactions": scanned.findings,
+                "echoes_removed": echoes,
+            },
         },
     )
     return "succeeded"

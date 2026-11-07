@@ -9,6 +9,8 @@ repeatable. Faults are configurable at startup (env) and at runtime
 * ``retry_after_s``: ``Retry-After`` header on injected 429s
 * ``outage``: every request returns 500 (provider outage drill)
 * ``fail_models``: requests for these models return 500 (one provider/model down)
+* ``obey_injections``: act like a hijacked model (follow ``ARGUS-TEST-CALL: tool {json}``
+  and ``ARGUS-TEST-SAY: text`` markers in untrusted content) for the injection eval
 * ``tool_script``: tool calls to make, one per turn, when the request offers tools.
   Turn N (N = tool results so far) calls ``tool_script[N]``; afterwards it answers in
   text. The default script reads the diff if a ``get_pr_diff`` tool is offered.
@@ -42,6 +44,9 @@ class Faults(BaseModel):
     seed: int | None = None
     tool_script: list[dict[str, Any]] | None = None
     fail_models: list[str] = []  # models that return 500 (per-model outage drill)
+    # Simulate a model hijacked by prompt injection: obey ARGUS-TEST-CALL / -SAY markers
+    # found anywhere in the conversation (used by the injection eval).
+    obey_injections: bool = False
 
 
 class MockSettings(BaseSettings):
@@ -66,8 +71,41 @@ def _text_of(message: dict[str, Any]) -> str:
     return ""
 
 
+DIRECTIVE_CALL = re.compile(
+    r"ARGUS-TEST-CALL:\s*([A-Za-z_][A-Za-z0-9_]*)\s*(\{[^\n]*?\})?(?=\s|$|<)"
+)
+DIRECTIVE_SAY = re.compile(r"ARGUS-TEST-SAY:\s*([^\n<]+)")
+
+
+def injected_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: list[dict[str, Any]] = []
+    for m in messages:
+        if m.get("role") == "system":
+            continue
+        for name, raw in DIRECTIVE_CALL.findall(_text_of(m)):
+            try:
+                args = json.loads(raw) if raw else {}
+            except ValueError:
+                args = {}
+            call = {"name": name, "arguments": args}
+            if call not in seen:
+                seen.append(call)
+    return seen
+
+
+def injected_says(messages: list[dict[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for m in messages:
+        if m.get("role") != "system":
+            out.extend(t.strip() for t in DIRECTIVE_SAY.findall(_text_of(m)))
+    return list(dict.fromkeys(out))
+
+
 def next_tool_call(
-    messages: list[dict[str, Any]], tools: list[dict[str, Any]], script: list[dict[str, Any]] | None
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    script: list[dict[str, Any]] | None,
+    obey: bool = False,
 ) -> dict[str, Any] | None:
     """The scripted tool call for this turn, as an OpenAI ``tool_calls`` entry, or None."""
     offered = [str((t.get("function") or {}).get("name")) for t in tools]
@@ -81,6 +119,8 @@ def next_tool_call(
             script = [{"name": "search_code", "arguments": {"query": question}}]
         else:
             script = []
+    if obey:
+        script = [*script, *injected_calls(messages)]
     turn = sum(1 for m in messages if m.get("role") == "tool")
     if turn >= len(script):
         return None
@@ -92,8 +132,17 @@ def next_tool_call(
     }
 
 
-def canned_completion(messages: list[dict[str, Any]]) -> str:
+def canned_completion(messages: list[dict[str, Any]], obey: bool = False) -> str:
     """Deterministic, plausible output keyed on the conversation."""
+    text = _canned(messages)
+    if obey:
+        says = injected_says(messages)
+        if says:
+            text = text + "\n\n" + "\n".join(says)
+    return text
+
+
+def _canned(messages: list[dict[str, Any]]) -> str:
     system = " ".join(_text_of(m) for m in messages if m.get("role") == "system").lower()
     last = _text_of(messages[-1]) if messages else ""
     digest = hashlib.sha256(last.encode()).hexdigest()[:8]
@@ -192,7 +241,11 @@ def create_app(faults: Faults | None = None) -> FastAPI:
                 elif block.get("type") == "text":
                     flat.append({"role": m["role"], "content": block.get("text", "")})
         tools = [{"function": {"name": t["name"]}} for t in body.get("tools") or []]
-        call = next_tool_call(flat, tools, state.faults.tool_script) if tools else None
+        call = (
+            next_tool_call(flat, tools, state.faults.tool_script, state.faults.obey_injections)
+            if tools
+            else None
+        )
         prompt_tokens = sum(estimate_tokens(_text_of(m)) for m in flat)
         cached = estimate_tokens(system) if body.get("system") else 0
         if call is not None:
@@ -207,7 +260,7 @@ def create_app(faults: Faults | None = None) -> FastAPI:
             out_tokens = 10
             stop = "tool_use"
         else:
-            text = canned_completion(flat)
+            text = canned_completion(flat, state.faults.obey_injections)
             content_blocks = [{"type": "text", "text": text}]
             out_tokens = estimate_tokens(text)
             stop = "end_turn"
@@ -262,7 +315,11 @@ def create_app(faults: Faults | None = None) -> FastAPI:
         if (err := state.injected_error(model)) is not None:
             return err
         tools = body.get("tools") or []
-        call = next_tool_call(messages, tools, state.faults.tool_script) if tools else None
+        call = (
+            next_tool_call(messages, tools, state.faults.tool_script, state.faults.obey_injections)
+            if tools
+            else None
+        )
         if call is not None and not body.get("stream"):
             prompt_tokens = sum(estimate_tokens(_text_of(m)) for m in messages)
             return JSONResponse(
@@ -285,7 +342,7 @@ def create_app(faults: Faults | None = None) -> FastAPI:
                     },
                 }
             )
-        text = canned_completion(messages)
+        text = canned_completion(messages, state.faults.obey_injections)
         max_tokens = body.get("max_tokens")
         if isinstance(max_tokens, int) and max_tokens > 0:
             text = text[: max_tokens * 4]

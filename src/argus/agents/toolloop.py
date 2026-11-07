@@ -16,6 +16,7 @@ from typing import Any
 import asyncpg
 
 from argus.auth import audit
+from argus.guardrails.injection import neutralise_wrapper
 from argus.llm.client import ChatModel
 from argus.steps import StepOutcome, StepRunner
 from argus.tools.hub import ToolDeniedError, ToolHub
@@ -46,7 +47,7 @@ def audit_hook(
 
 
 def wrap_untrusted(source: str, text: str) -> str:
-    return f'<untrusted_data source="{source}">\n{text}\n</untrusted_data>'
+    return f'<untrusted_data source="{source}">\n{neutralise_wrapper(text)}\n</untrusted_data>'
 
 
 async def run_tool_loop(
@@ -58,15 +59,19 @@ async def run_tool_loop(
     between_steps: Callable[[], Awaitable[None]] | None = None,
     max_tokens: int = 1024,
     on_tool_decision: ToolDecisionHook | None = None,
+    on_tool_result: Callable[[str, str], Awaitable[object]] | None = None,
 ) -> dict[str, Any]:
     """Run until the model answers without tool calls. Returns that final LLM output
-    (``content``, ``model``). Bounded by the run's step and token budgets."""
-    specs = hub.model_specs()
-    tool_names = [s["function"]["name"] for s in specs]
+    (``content``, ``model``). Bounded by the run's step and token budgets.
 
+    ``on_tool_result(tool, text)`` sees every tool result (also replayed ones, so a
+    guardrail that narrows the tool set decides the same way on resume). The offered
+    tools are recomputed each turn, so a narrowed set applies from the next turn on."""
     while True:
+        specs = hub.model_specs()
+        tool_names = [s["function"]["name"] for s in specs]
 
-        async def call_llm() -> StepOutcome:
+        async def call_llm(specs: list[dict[str, Any]] = specs) -> StepOutcome:
             res = await llm.chat(messages, tools=specs or None, max_tokens=max_tokens)
             return StepOutcome(
                 output={
@@ -124,6 +129,8 @@ async def run_tool_loop(
                 return StepOutcome(output={"text": out.text, "is_error": out.is_error})
 
             result: dict[str, Any] = await steps.step("tool_call", name, args, call_tool)
+            if on_tool_result is not None:
+                await on_tool_result(name, str(result["text"]))
             if between_steps is not None:
                 await between_steps()
             messages.append(
