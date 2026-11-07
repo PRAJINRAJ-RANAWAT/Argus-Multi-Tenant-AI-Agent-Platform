@@ -1,0 +1,10 @@
+{"case": "sql-user-lookup", "review": "### Findings\n- **SQL injection** (`app/users.py:6`): user input is interpolated into the query.", "human_score": 5}
+{"case": "sql-user-lookup", "review": "Nice work on this change!\nNo issues found.", "human_score": 1}
+{"case": "two-bugs", "review": "### Findings\n- **SQL injection** (`app/search.py:2`): concatenated LIKE pattern.", "human_score": 3}
+{"case": "two-bugs", "review": "### Findings\n- **SQL injection** (`app/search.py:2`): x\n- **Off-by-one error** (`app/search.py:4`): range(len()+1)", "human_score": 5}
+{"case": "off-by-one-pages", "review": "### Findings\n- **Off-by-one error** (`app/paginate.py:3`): x\n- **Nitpick: naming** (`app/paginate.py:1`): y\n- **Nitpick: long line** (`app/paginate.py:2`): z\n- **Nitpick: naming** (`app/paginate.py:4`): w\n- **Nitpick: naming** (`app/paginate.py:5`): v", "human_score": 3}
+{"case": "clean-retry", "review": "No issues found.", "human_score": 5}
+{"case": "clean-retry", "review": "### Findings\n- **Nitpick: naming** (`app/retry.py:4`): a\n- **Nitpick: long line** (`app/retry.py:5`): b\n- **Nitpick: naming** (`app/retry.py:6`): c", "human_score": 2}
+{"case": "secret-in-config", "review": "### Findings\n- **Hardcoded secret** (`app/payments.py:3`): move the key to the environment.", "human_score": 5}
+{"case": "missing-tests-billing", "review": "Nice work on this change!\nNo issues found.", "human_score": 1}
+{"case": "none-check-user", "review": "### Findings\n- **Missing None check** (`app/profile.py:3`): user may be None.\n- **Nitpick: naming** (`app/profile.py:1`): x", "human_score": 4}

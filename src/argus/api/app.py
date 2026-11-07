@@ -714,6 +714,72 @@ async def decide_approval(
     return {"approval_id": str(approval_id), "run_id": str(run_id), "decision": body.decision}
 
 
+class FeedbackRequest(BaseModel):
+    rating: str = Field(pattern="^(up|down)$")
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+@api.post("/runs/{run_id}/feedback")
+async def post_feedback(
+    request: Request, p: CurrentPrincipal, run_id: uuid.UUID, body: FeedbackRequest
+) -> dict[str, object]:
+    await require(request, p, "runs:read", "runs.feedback")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        row = await conn.fetchrow(_RUN_SELECT + " WHERE r.id = $1", run_id)
+        if row is None or not await _visible(request, p, [row]):
+            raise HTTPException(status_code=404, detail="run not found")
+        await conn.execute(
+            """
+            INSERT INTO run_feedback (tenant_id, run_id, actor, rating, comment)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (run_id, actor) DO UPDATE
+            SET rating = EXCLUDED.rating, comment = EXCLUDED.comment, created_at = now()
+            """,
+            p.tenant_id,
+            run_id,
+            f"{p.actor_type}:{p.actor_id}",
+            body.rating,
+            body.comment,
+        )
+    return {"run_id": str(run_id), "rating": body.rating}
+
+
+@api.get("/evals/online")
+async def online_evals(
+    request: Request, p: CurrentPrincipal, days: Annotated[int, Query(ge=1, le=90)] = 30
+) -> dict[str, object]:
+    await require(request, p, "runs:read", "evals.read")
+    async with tenant_conn(_x(request, "app_db"), p.tenant_id, p.user_id) as conn:
+        by_prompt = await conn.fetch(
+            """
+            SELECT prompt_version, count(*) AS samples, avg(judge_score) AS mean_score
+            FROM eval_samples WHERE status = 'done'
+              AND created_at > now() - make_interval(days => $1)
+            GROUP BY prompt_version ORDER BY max(created_at) DESC
+            """,
+            days,
+        )
+        feedback = await conn.fetchrow(
+            """
+            SELECT count(*) FILTER (WHERE rating = 'up') AS up,
+                   count(*) FILTER (WHERE rating = 'down') AS down
+            FROM run_feedback WHERE created_at > now() - make_interval(days => $1)
+            """,
+            days,
+        )
+    return {
+        "judge_by_prompt": [
+            {
+                "prompt_version": r["prompt_version"],
+                "samples": r["samples"],
+                "mean_score": round(float(r["mean_score"]), 3),
+            }
+            for r in by_prompt
+        ],
+        "feedback": {"up": feedback["up"], "down": feedback["down"]} if feedback else {},
+    }
+
+
 class BudgetRequest(BaseModel):
     daily_tokens: int = Field(gt=0, le=10_000_000_000)
     alert_pct: int = Field(default=80, ge=1, le=100)

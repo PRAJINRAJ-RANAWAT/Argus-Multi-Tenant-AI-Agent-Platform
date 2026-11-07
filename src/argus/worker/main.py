@@ -21,6 +21,7 @@ from argus.agents.qa import AGENT_TYPE as QA_AGENT
 from argus.agents.qa import QADeps, handle_qa_message
 from argus.config import Settings, get_settings
 from argus.db.pool import create_pool
+from argus.evals.online import handle_eval_message
 from argus.gateway.core import Gateway, GatewayConfig
 from argus.gateway.providers import AnthropicProvider, OpenAIProvider, Provider
 from argus.gateway.semcache import QACache
@@ -32,7 +33,7 @@ from argus.logging import configure_logging
 from argus.metrics import QUEUE_DEPTH, QUEUE_OLDEST_AGE
 from argus.queue.consumer import run_consumer
 from argus.queue.streams import StreamQueue
-from argus.queue.topics import JOBS_INDEX, JOBS_QA, JOBS_REVIEW
+from argus.queue.topics import JOBS_EVAL, JOBS_INDEX, JOBS_QA, JOBS_REVIEW
 from argus.rag.embed import HttpEmbedder
 from argus.rag.jobs import IndexDeps, handle_index_message
 from argus.runs import reap_runs
@@ -43,6 +44,7 @@ log = logging.getLogger("argus.worker")
 REVIEW_GROUP = "review-workers"
 INDEX_GROUP = "index-workers"
 QA_GROUP = "qa-workers"
+EVAL_GROUP = "eval-workers"
 REAP_INTERVAL_S = 10.0
 TOPIC_FOR_AGENT = {PR_REVIEW: JOBS_REVIEW, QA_AGENT: JOBS_QA}
 
@@ -127,6 +129,7 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
             llm=build_gateway(settings, http, redis, pool),
             redis=redis,
             worker_id=worker_id,
+            online_eval_rate=settings.online_eval_rate,
         )
         embedder = HttpEmbedder(
             http,
@@ -150,12 +153,16 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
         review_q = StreamQueue(redis, JOBS_REVIEW, REVIEW_GROUP, worker_id)
         index_q = StreamQueue(redis, JOBS_INDEX, INDEX_GROUP, worker_id)
         qa_q = StreamQueue(redis, JOBS_QA, QA_GROUP, worker_id)
+        eval_q = StreamQueue(redis, JOBS_EVAL, EVAL_GROUP, worker_id)
         log.info(
             "worker started",
-            extra={"worker_id": worker_id, "streams": [JOBS_REVIEW, JOBS_INDEX, JOBS_QA]},
+            extra={
+                "worker_id": worker_id,
+                "streams": [JOBS_REVIEW, JOBS_INDEX, JOBS_QA, JOBS_EVAL],
+            },
         )
         reaper = asyncio.create_task(reaper_loop(pool, stop, REAP_INTERVAL_S))
-        gauges = asyncio.create_task(queue_gauges([review_q, index_q, qa_q], stop))
+        gauges = asyncio.create_task(queue_gauges([review_q, index_q, qa_q, eval_q], stop))
         try:
             await asyncio.gather(
                 run_consumer(
@@ -175,6 +182,12 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
                     functools.partial(handle_qa_message, qa_deps),
                     stop,
                     concurrency=settings.worker_concurrency,
+                ),
+                run_consumer(
+                    eval_q,
+                    functools.partial(handle_eval_message, pool, deps.llm),
+                    stop,
+                    concurrency=2,
                 ),
             )
         finally:
