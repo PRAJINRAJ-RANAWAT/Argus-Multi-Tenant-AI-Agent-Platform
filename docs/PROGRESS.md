@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**M2 · Durable agent runtime**: M2a (checkpointed steps, heartbeats, supersede, budgets, DLQ replay) in review; M2b (tool-calling loop over MCP) next.
+**M2 · Durable agent runtime**: complete (M2a merged as `v0.2.0`, M2b in review). Next: M3 · Code RAG.
 
 M1's live "done when" (install the App → a review appears) is still waiting on the VPS and GitHub App (blockers below).
 
@@ -46,9 +46,17 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - ADR 0006: build the runtime on Postgres vs adopt Temporal, and when we would switch.
 - Tests (113 total): crash between steps replays without re-calling the LLM; crash mid-step re-executes; zombie cannot start or finish a step; heartbeat keeps a 0.6 s lease alive for 1.5 s; `kill -9` while posting the comment → reaper → resume replays 2 steps, 1 comment; new push mid-review → old run superseded, PR lock busy until it stops, 1 comment for the new SHA; late old message superseded before starting; step budget fails the run; 8 concurrent DLQ replays enqueue each entry once.
 
+### M2b · Tool-calling loop over MCP
+- MCP servers with the official SDK (v2): `argus-code` (`get_pr_diff`, `list_changed_files`, `read_file`) and `argus-github` (`get_ci_status`, `post_review_comment`, `open_issue`). Built per run and bound to its repo/PR/head SHA; `read_file` rejects traversal.
+- `ToolHub` (MCP client) + `AgentToolPolicy`: model tools vs runtime-only tools per agent; everything else denied and recorded as a step. Write tools take a runtime-supplied `idempotency_key` (hidden from the model) and go through the side-effect ledger.
+- `run_tool_loop`: each LLM turn and tool call is a checkpointed step; tool output wrapped as untrusted data; supersede checked between steps. Tool crashes (GitHub 5xx) retry the step; deliberate tool errors go back to the model.
+- LLM client parses `tool_calls`; mock LLM gains `tool_script` (scripted tool calls per turn; default reads the diff).
+- PR review = tool loop + one runtime-posted comment. ADR 0007.
+- Tests (118 total): model drives 4 read tools then one comment; `open_issue`/`post_review_comment`/unknown tool from the model denied and audited, no issue created; traversal and missing file are tool errors; GitHub 502 on a tool → retry, step attempts 2, one comment; model never sees write tools or `idempotency_key`; `kill -9` while posting → resume replays 3 steps, one comment.
+
 ## Next
 
-- **M2b · Tool-calling loop over MCP:** `argus-code` and `argus-github` MCP servers (official SDK), the agent runtime as MCP client, per-agent tool allowlists with read/write tags, write tools keyed by step through the side-effect ledger. The review agent moves from a fixed pipeline to an LLM-driven tool loop (mock LLM gains tool calls).
+- **M3 · Code RAG:** tree-sitter chunking, incremental indexing on push (own queue + workers), pgvector + full-text hybrid search, re-ranking, cited answers; `search_code` / `find_callers` tools in `argus-code`; Codebase Q&A. Done when a one-line push re-embeds only the changed chunk.
 
 ## Blockers waiting on the owner
 
