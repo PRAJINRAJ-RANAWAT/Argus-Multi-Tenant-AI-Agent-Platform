@@ -124,6 +124,12 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - k6 webhook burst script. [Load and chaos report](load-and-chaos-report.md): 300 webhooks/s at p99 114.8 ms, 0 failed, 0 lost; noisy neighbour quiet p95 1.9 s vs 5.9 s FIFO; Redis restart 40/40 with one comment each; six incidents found and fixed.
 - Tests (211 total): noisy neighbour (done when), round-robin, cap across workers, dead worker cannot leak capacity, capped tenant cannot borrow while others wait, late lanes served, idle pruning, duplicate storm, force-push churn, Redis data loss, queue outage while settling, load shedding, autoscaling policy.
 
+### Landing page and public demo
+- `/` is a public landing page (dark-first, same design system): hero, demo video slot, the architecture as SVG with scroll-linked callouts (queue, durable runs, LLM gateway, tenant isolation, evals), proof in numbers read from the repository's reports at build time (missing reports hide their metrics), ADRs and reports, footer. GSAP ScrollTrigger/SplitText/MotionPath, Lenis, parallax; reduced-motion fallback. SEO meta, canonical URL, Open Graph image, JSON-LD, robots.txt and sitemap.
+- `/demo`: read-only viewer session in the `northwind` demo tenant, no login, demo banner in the app. Writes refused on the server and audited; per-IP and global question limits plus the tenant's daily token budget, with friendly 429s.
+- `argus-seed-demo`: idempotent seed of 4 repos, 4 weeks of reviews (succeeded, failed, superseded), pending approvals, cited Q&A, flagged injections, budget usage; realistic durations, tokens and costs.
+- Tests (220 total): seed realism and idempotency, other tenants untouched, viewer of the demo tenant only (headers, cookies, search), every write 403 and audited, IP rate limit, budget exhausted, `/demo` 404/503/429, demo session dies when the demo is switched off.
+
 ## After M9
 
 - Live deployment and the GitHub App (blockers below), then a nightly real-model eval run.
