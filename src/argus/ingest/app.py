@@ -6,13 +6,16 @@ from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
+from opentelemetry.trace import SpanKind
 
 from argus.config import Settings, get_settings
 from argus.github.webhooks import route_github_event, verify_signature
 from argus.health import Resources
 from argus.ingest.dedupe import already_processed, mark_processed
 from argus.ingest.store import persist_event
+from argus.metrics import WEBHOOKS
 from argus.service import build_app
+from argus.telemetry import inject, span
 
 log = logging.getLogger("argus.ingest")
 
@@ -28,6 +31,24 @@ def webhook_router() -> APIRouter:
 
     @router.post("/webhooks/github")
     async def github_webhook(request: Request) -> JSONResponse:
+        event = request.headers.get("x-github-event") or "unknown"
+        with span(
+            "webhook.receive",
+            kind=SpanKind.SERVER,
+            attributes={
+                "github.event": event,
+                "github.delivery": request.headers.get("x-github-delivery"),
+            },
+        ) as s:
+            resp = await _github_webhook(request)
+            body = json.loads(bytes(resp.body))
+            outcome = body.get("status") or body.get("detail")
+            s.set_attribute("http.status_code", resp.status_code)
+            s.set_attribute("argus.outcome", str(outcome))
+            WEBHOOKS.labels(event, str(resp.status_code)).inc()
+            return resp
+
+    async def _github_webhook(request: Request) -> JSONResponse:
         res: Resources = request.app.state.resources
         secret = res.settings.github_webhook_secret.get_secret_value()
 
@@ -63,6 +84,7 @@ def webhook_router() -> APIRouter:
             event_type=event_type,
             payload=payload,
             topic=topic,
+            trace=inject(),
         )
         await mark_processed(res.redis, "github", delivery_id)
         log.info(

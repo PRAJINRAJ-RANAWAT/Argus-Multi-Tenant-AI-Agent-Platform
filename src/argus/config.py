@@ -68,6 +68,17 @@ class Settings(BaseSettings):
             self.anthropic_base_url,
         )
 
+    # Observability: OTLP/HTTP endpoint for traces (Jaeger, Tempo, a collector, or
+    # Langfuse's /api/public/otel) and optional headers ("k=v,k2=v2", e.g. auth).
+    otel_endpoint: str = ""
+    otel_headers: SecretStr = SecretStr("")
+    metrics_port: int = 9100  # worker and relay serve /metrics here
+
+    def otel_header_map(self) -> dict[str, str]:
+        raw = self.otel_headers.get_secret_value()
+        pairs = (p.split("=", 1) for p in raw.split(",") if "=" in p)
+        return {k.strip(): v.strip() for k, v in pairs}
+
     # Workers
     worker_id: str = ""
     # Bearer token for operator endpoints (/admin: DLQ). Empty = admin API off.

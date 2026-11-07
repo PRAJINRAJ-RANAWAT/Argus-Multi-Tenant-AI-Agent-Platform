@@ -20,6 +20,9 @@ from typing import Any
 from mcp import Client
 from mcp.server.mcpserver import MCPServer
 from mcp.types import TextContent, Tool
+from opentelemetry.trace import SpanKind
+
+from argus.telemetry import span
 
 # Runtime-supplied arguments, hidden from the model's view of a tool schema.
 RUNTIME_ARGS = frozenset({"idempotency_key"})
@@ -142,7 +145,13 @@ class ToolHub:
         if by_model:
             arguments = {k: v for k, v in arguments.items() if k not in RUNTIME_ARGS}
         client, _ = self.tools[name]
-        result = await client.call_tool(name, arguments)
+        with span(
+            f"tool {name}",
+            kind=SpanKind.CLIENT,
+            attributes={"mcp.tool": name, "mcp.by_model": by_model},
+        ) as s:
+            result = await client.call_tool(name, arguments)
+            s.set_attribute("mcp.is_error", bool(result.is_error))
         text = _result_text(list(result.content))
         if result.is_error and text.strip() == f"Error executing tool {name}":
             # The SDK hides an unexpected exception behind this generic text.

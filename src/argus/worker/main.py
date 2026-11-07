@@ -12,6 +12,7 @@ import socket
 
 import asyncpg
 import httpx
+from prometheus_client import start_http_server
 from redis.asyncio import Redis
 
 from argus.agents.pr_review import AGENT_TYPE as PR_REVIEW
@@ -26,13 +27,16 @@ from argus.gateway.semcache import QACache
 from argus.github.auth import InstallationTokenProvider
 from argus.github.client import GitHubClient
 from argus.guardrails.egress import EgressGuard
+from argus.http_tracing import TracingTransport
 from argus.logging import configure_logging
+from argus.metrics import QUEUE_DEPTH, QUEUE_OLDEST_AGE
 from argus.queue.consumer import run_consumer
 from argus.queue.streams import StreamQueue
 from argus.queue.topics import JOBS_INDEX, JOBS_QA, JOBS_REVIEW
 from argus.rag.embed import HttpEmbedder
 from argus.rag.jobs import IndexDeps, handle_index_message
 from argus.runs import reap_runs
+from argus.telemetry import configure_tracing
 
 log = logging.getLogger("argus.worker")
 
@@ -83,6 +87,20 @@ def build_gateway(
     return Gateway(providers, redis, pool, config)
 
 
+async def queue_gauges(queues: list[StreamQueue], stop: asyncio.Event, every_s: float = 15) -> None:
+    """Publish queue depth and oldest-message age for Prometheus."""
+    while not stop.is_set():
+        for q in queues:
+            try:
+                for state, n in (await q.depth()).items():
+                    QUEUE_DEPTH.labels(q.stream, state).set(n)
+                QUEUE_OLDEST_AGE.labels(q.stream).set(await q.oldest_age_s())
+            except Exception:
+                log.debug("queue gauge update failed", exc_info=True)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=every_s)
+
+
 def default_worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
@@ -94,7 +112,8 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
     timeout = httpx.Timeout(settings.llm_timeout_s, connect=5.0)
     egress = EgressGuard(settings.egress_hosts())
     log.info("egress allowlist", extra={"hosts": sorted(egress.allowed)})
-    async with httpx.AsyncClient(timeout=timeout, transport=egress) as http:
+    transport = TracingTransport(egress)
+    async with httpx.AsyncClient(timeout=timeout, transport=transport) as http:
         tokens = InstallationTokenProvider(
             http,
             redis,
@@ -136,6 +155,7 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
             extra={"worker_id": worker_id, "streams": [JOBS_REVIEW, JOBS_INDEX, JOBS_QA]},
         )
         reaper = asyncio.create_task(reaper_loop(pool, stop, REAP_INTERVAL_S))
+        gauges = asyncio.create_task(queue_gauges([review_q, index_q, qa_q], stop))
         try:
             await asyncio.gather(
                 run_consumer(
@@ -161,6 +181,7 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
             log.info("worker stopping")
             stop.set()
             await reaper
+            await gauges
             await redis.aclose()
             await pool.close()
 
@@ -168,6 +189,12 @@ async def run_worker(settings: Settings, stop: asyncio.Event) -> None:
 def main() -> None:
     settings = get_settings().model_copy(update={"service_name": "argus-worker"})
     configure_logging(settings.service_name, settings.log_level)
+    configure_tracing(
+        settings.service_name,
+        endpoint=settings.otel_endpoint,
+        headers=settings.otel_header_map(),
+    )
+    start_http_server(settings.metrics_port)
 
     async def _main() -> None:
         stop = asyncio.Event()

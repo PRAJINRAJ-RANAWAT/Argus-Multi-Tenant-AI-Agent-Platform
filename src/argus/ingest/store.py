@@ -26,6 +26,7 @@ async def persist_event(
     event_type: str,
     payload: dict[str, Any],
     topic: str | None,
+    trace: dict[str, str] | None = None,
 ) -> PersistResult:
     """Insert the event and (if routed) its outbox message atomically.
 
@@ -62,6 +63,7 @@ async def persist_event(
             "event_type": event_type,
             "action": action,
             "installation_id": installation_id,
+            "trace": trace or {},  # W3C trace context, continued by the relay and worker
         }
         await conn.execute(
             "INSERT INTO outbox (topic, payload) VALUES ($1, $2::jsonb)",

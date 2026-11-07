@@ -1,0 +1,118 @@
+# SLO alerts with multi-window, multi-burn-rate rules (Google SRE workbook, ch. 5).
+# A burn rate of 14.4 spends 2% of a 30-day budget in 1 hour (page); 6 spends 5% in
+# 6 hours (page); 1 spends 10% in 3 days (ticket). Each rule needs both its long and
+# short window to fire, so it stops paging soon after the problem stops.
+groups:
+  - name: argus-slo-recording
+    rules:
+      # Webhook acknowledged in under 300 ms (SLO: 99%).
+      - record: argus:webhook_slow_ratio:rate5m
+        expr: |
+          1 - (
+            sum(rate(argus_http_request_duration_seconds_bucket{service="argus-ingest",route="/webhooks/github",le="0.3"}[5m]))
+            / clamp_min(sum(rate(argus_http_request_duration_seconds_count{service="argus-ingest",route="/webhooks/github"}[5m])), 1e-9)
+          )
+      - record: argus:webhook_slow_ratio:rate1h
+        expr: |
+          1 - (
+            sum(rate(argus_http_request_duration_seconds_bucket{service="argus-ingest",route="/webhooks/github",le="0.3"}[1h]))
+            / clamp_min(sum(rate(argus_http_request_duration_seconds_count{service="argus-ingest",route="/webhooks/github"}[1h])), 1e-9)
+          )
+      - record: argus:webhook_slow_ratio:rate6h
+        expr: |
+          1 - (
+            sum(rate(argus_http_request_duration_seconds_bucket{service="argus-ingest",route="/webhooks/github",le="0.3"}[6h]))
+            / clamp_min(sum(rate(argus_http_request_duration_seconds_count{service="argus-ingest",route="/webhooks/github"}[6h])), 1e-9)
+          )
+      - record: argus:webhook_slow_ratio:rate30m
+        expr: |
+          1 - (
+            sum(rate(argus_http_request_duration_seconds_bucket{service="argus-ingest",route="/webhooks/github",le="0.3"}[30m]))
+            / clamp_min(sum(rate(argus_http_request_duration_seconds_count{service="argus-ingest",route="/webhooks/github"}[30m])), 1e-9)
+          )
+      # Availability (SLO: 99.5% of requests not 5xx).
+      - record: argus:http_error_ratio:rate5m
+        expr: |
+          sum(rate(argus_http_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum(rate(argus_http_requests_total[5m])), 1e-9)
+      - record: argus:http_error_ratio:rate1h
+        expr: |
+          sum(rate(argus_http_requests_total{status=~"5.."}[1h]))
+          / clamp_min(sum(rate(argus_http_requests_total[1h])), 1e-9)
+      - record: argus:http_error_ratio:rate30m
+        expr: |
+          sum(rate(argus_http_requests_total{status=~"5.."}[30m]))
+          / clamp_min(sum(rate(argus_http_requests_total[30m])), 1e-9)
+      - record: argus:http_error_ratio:rate6h
+        expr: |
+          sum(rate(argus_http_requests_total{status=~"5.."}[6h]))
+          / clamp_min(sum(rate(argus_http_requests_total[6h])), 1e-9)
+      # PR opened to review comment under 2 min (SLO: 95%).
+      - record: argus:review_slow_ratio:rate1h
+        expr: |
+          1 - (
+            sum(rate(argus_run_duration_seconds_bucket{agent="pr_review",le="120"}[1h]))
+            / clamp_min(sum(rate(argus_run_duration_seconds_count{agent="pr_review"}[1h])), 1e-9)
+          )
+      - record: argus:review_slow_ratio:rate6h
+        expr: |
+          1 - (
+            sum(rate(argus_run_duration_seconds_bucket{agent="pr_review",le="120"}[6h]))
+            / clamp_min(sum(rate(argus_run_duration_seconds_count{agent="pr_review"}[6h])), 1e-9)
+          )
+
+  - name: argus-slo-alerts
+    rules:
+      - alert: WebhookLatencyBudgetBurnFast
+        expr: argus:webhook_slow_ratio:rate1h > (14.4 * 0.01) and argus:webhook_slow_ratio:rate5m > (14.4 * 0.01)
+        labels: { severity: page, slo: webhook-latency }
+        annotations:
+          summary: "Webhook p99 SLO burning 14x: 2% of the monthly budget per hour"
+      - alert: WebhookLatencyBudgetBurnSlow
+        expr: argus:webhook_slow_ratio:rate6h > (6 * 0.01) and argus:webhook_slow_ratio:rate30m > (6 * 0.01)
+        labels: { severity: page, slo: webhook-latency }
+        annotations:
+          summary: "Webhook p99 SLO burning 6x: 5% of the monthly budget in 6 hours"
+      - alert: AvailabilityBudgetBurnFast
+        expr: argus:http_error_ratio:rate1h > (14.4 * 0.005) and argus:http_error_ratio:rate5m > (14.4 * 0.005)
+        labels: { severity: page, slo: availability }
+        annotations:
+          summary: "5xx ratio burning the 99.5% availability budget 14x"
+      - alert: AvailabilityBudgetBurnSlow
+        expr: argus:http_error_ratio:rate6h > (6 * 0.005) and argus:http_error_ratio:rate30m > (6 * 0.005)
+        labels: { severity: page, slo: availability }
+        annotations:
+          summary: "5xx ratio burning the 99.5% availability budget 6x"
+      - alert: ReviewLatencyBudgetBurn
+        expr: argus:review_slow_ratio:rate6h > (6 * 0.05) and argus:review_slow_ratio:rate1h > (6 * 0.05)
+        labels: { severity: ticket, slo: review-latency }
+        annotations:
+          summary: "More than 30% of reviews take over 2 minutes (SLO: 95% under 2 min)"
+
+  - name: argus-symptoms
+    rules:
+      - alert: QueueBacklogOld
+        expr: max by (stream) (argus_queue_oldest_pending_age_seconds) > 300
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "Oldest message on {{ $labels.stream }} is older than 5 minutes"
+      - alert: DeadLettersGrowing
+        expr: increase(argus_queue_depth{state="dlq"}[15m]) > 0
+        labels: { severity: ticket }
+        annotations:
+          summary: "New dead letters on {{ $labels.stream }}: replay or fix (no event may be lost)"
+      - alert: ModelBreakerOpen
+        expr: max by (model) (argus_breaker_state) == 2
+        for: 5m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Circuit breaker open for {{ $labels.model }}: traffic is on the fallback"
+      - alert: LLMErrorRateHigh
+        expr: |
+          sum(rate(argus_llm_calls_total{status="error"}[10m]))
+          / clamp_min(sum(rate(argus_llm_calls_total[10m])), 1e-9) > 0.2
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: "More than 20% of LLM calls fail"

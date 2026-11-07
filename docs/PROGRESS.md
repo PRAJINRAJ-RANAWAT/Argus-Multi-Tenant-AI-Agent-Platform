@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-**M6 · Guardrails and approvals**: in review. Next: M7 · Observability.
+**M7 · Observability**: in review. Next: M8 · Evals in CI.
 
 M1's live "done when" (install the App → a review appears) is still waiting on the VPS and GitHub App (blockers below).
 
@@ -97,9 +97,17 @@ M1's live "done when" (install the App → a review appears) is still waiting on
 - Result: **ASR 3.5% (1/29), 0 false positives**; no classifier 31.0%, no output scanning 17.2%. The first run was 34.5% and found real gaps that were fixed (see ADR 0011).
 - Tests (188 total): eval ASR ≤ 5%, no severe category succeeds, each layer matters; classifier positives/negatives; scanner; wrapper; path binding; egress; log redaction; flagged PR → reduced tools + warning; approval parks, viewer cannot decide, approve resumes without new LLM calls and posts once, decisions final; rejection cancels.
 
+### M6 · Guardrails and approvals (merged, `v0.6.0`)
+
+### M7 · Observability
+- OpenTelemetry spans across every hop with W3C context in the outbox payload and stream fields: `webhook.receive` → `outbox.relay` → `queue.process` → `agent.run` → `step.*` → `llm.chat` / `tool *` → `HTTP *` (GitHub, providers). Retries stay in the same trace. Logs carry `trace_id`/`span_id`. OTLP/HTTP export (Jaeger/Tempo/collector/Langfuse) via `ARGUS_OTEL_ENDPOINT`.
+- Prometheus metrics: HTTP, webhooks, outbox, queue depth + oldest age, messages, runs + duration, steps, LLM calls/tokens/cost/latency, breaker state; `/metrics` on API and ingest, `:9100` worker, `:9101` relay.
+- SLO burn-rate alerts (webhook latency, availability, review latency) and symptom alerts, validated with promtool; Grafana dashboard; `docker-compose.observability.yml` (Prometheus, Grafana, Jaeger). ADR 0012.
+- Tests (193 total): **one trace from the webhook to the GitHub comment POST, parent chain in order**; retry stays in the same trace; metrics exported; oldest-age gauge; route templates low-cardinality.
+
 ## Next
 
-- **M7 · Observability:** OpenTelemetry across queue hops (trace context in outbox/stream messages), spans for LLM calls and tools, Prometheus metrics (queue depth/age, DLQ, run outcomes, tokens/cost, breaker state), Grafana dashboards, SLO burn-rate alerts, Langfuse for LLM traces. Done when one trace shows webhook to GitHub comment.
+- **M8 · Evals in CI:** golden PR-review set with planted bugs (recall, precision, line accuracy), Q&A set (retrieval recall@k separate from answer quality), safety set (injection eval + cross-tenant refusals), exact checks + LLM judge with hand-checked sample, CI gate that fails on regressions vs a stored baseline, results history, online sampling. Done when a deliberately worse prompt fails CI.
 
 ## Blockers waiting on the owner
 

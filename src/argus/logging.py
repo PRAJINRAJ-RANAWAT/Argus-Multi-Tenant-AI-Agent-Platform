@@ -11,6 +11,8 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
+from opentelemetry import trace
+
 from argus.redact import redact, redact_text
 
 trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
@@ -38,6 +40,11 @@ class JsonFormatter(logging.Formatter):
             value = var.get()
             if value is not None:
                 payload[key] = value
+        if "trace_id" not in payload:
+            span_ctx = trace.get_current_span().get_span_context()
+            if span_ctx.is_valid:
+                payload["trace_id"] = format(span_ctx.trace_id, "032x")
+                payload["span_id"] = format(span_ctx.span_id, "016x")
         for key, value in record.__dict__.items():
             if key not in _RESERVED and not key.startswith("_"):
                 payload[key] = redact({key: value})[key]

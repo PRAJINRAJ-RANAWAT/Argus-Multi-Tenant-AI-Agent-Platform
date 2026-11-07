@@ -247,6 +247,24 @@ class StreamQueue:
             out.append(msg)
         return out
 
+    async def oldest_age_s(self, now_ms: int | None = None) -> float:
+        """Age of the oldest message not yet acked: the oldest pending (delivered, unacked)
+        or the oldest not yet delivered to the group, whichever is older."""
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
+        oldest: int | None = None
+        summary: Any = await self.redis.xpending(self.stream, self.group)
+        if summary and summary.get("pending"):
+            oldest = int(_s(summary["min"]).split("-")[0])
+        info = await self.redis.xinfo_groups(self.stream)
+        group = next((g for g in info if _s(g["name"]) == self.group), None)
+        if group is not None:
+            last = _s(group["last-delivered-id"])
+            nxt: Any = await self.redis.xrange(self.stream, min=f"({last}", max="+", count=1)
+            if nxt:
+                ts = int(_s(nxt[0][0]).split("-")[0])
+                oldest = ts if oldest is None else min(oldest, ts)
+        return 0.0 if oldest is None else max(0.0, (now - oldest) / 1000)
+
     async def depth(self) -> dict[str, int]:
         info = await self.redis.xinfo_groups(self.stream)
         group = next((g for g in info if _s(g["name"]) == self.group), None)

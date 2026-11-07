@@ -5,8 +5,13 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
+from opentelemetry.trace import SpanKind
+
+from argus.metrics import MESSAGES
 from argus.queue.streams import Message, StreamQueue
+from argus.telemetry import extract, span
 
 log = logging.getLogger(__name__)
 
@@ -17,7 +22,32 @@ class PermanentError(Exception):
     """Handler error that retrying cannot fix; the message goes straight to the DLQ."""
 
 
+def _parent(msg: Message) -> Any:
+    """Trace context: the relay's ``traceparent`` field, or (after a retry re-publish)
+    the original one carried in the payload."""
+    if "traceparent" in msg.fields:
+        return extract(msg.fields)
+    try:
+        data = msg.json()
+    except ValueError:
+        return None
+    return extract(data.get("trace") if isinstance(data, dict) else None)
+
+
 async def handle_one(queue: StreamQueue, handler: Handler, msg: Message) -> str:
+    with span(
+        f"queue.process {queue.stream}",
+        kind=SpanKind.CONSUMER,
+        parent=_parent(msg),
+        attributes={"messaging.message.id": msg.id, "messaging.attempt": msg.attempt},
+    ) as s:
+        outcome = await _handle_one(queue, handler, msg)
+        s.set_attribute("argus.outcome", outcome)
+        MESSAGES.labels(queue.stream, outcome).inc()
+        return outcome
+
+
+async def _handle_one(queue: StreamQueue, handler: Handler, msg: Message) -> str:
     try:
         await handler(msg)
     except PermanentError as exc:

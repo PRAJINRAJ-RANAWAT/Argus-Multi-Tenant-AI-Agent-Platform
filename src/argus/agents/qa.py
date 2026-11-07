@@ -10,11 +10,13 @@ indexed files are returned as verified.
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
+from opentelemetry import trace
 
 from argus.agents.toolloop import audit_hook, run_tool_loop, wrap_untrusted
 from argus.auth import audit
@@ -24,8 +26,10 @@ from argus.github.client import GitHubClient
 from argus.guardrails.output import scan
 from argus.guardrails.runtime import InjectionGuard
 from argus.llm.client import ModelSource
+from argus.logging import run_id_var, tenant_id_var
 from argus.mcp_servers import RunContext
 from argus.mcp_servers.code import build_code_server
+from argus.metrics import RUN_DURATION, RUNS
 from argus.queue.consumer import PermanentError
 from argus.queue.streams import Message
 from argus.queue.topics import JOBS_QA
@@ -39,6 +43,7 @@ from argus.runs import (
     release_run,
 )
 from argus.steps import BudgetExceededError, NonDeterminismError, StepRunner
+from argus.telemetry import span
 from argus.tools.hub import POLICIES, REDUCED_TOOLS, ToolHub
 
 log = logging.getLogger("argus.agents.qa")
@@ -160,6 +165,16 @@ async def verify_citations(
 
 
 async def handle_qa_message(deps: QADeps, msg: Message) -> None:
+    started = time.monotonic()
+    with span(f"agent.run {AGENT_TYPE}") as s:
+        outcome = await _handle(deps, msg)
+        s.set_attribute("argus.outcome", outcome)
+    RUNS.labels(AGENT_TYPE, outcome).inc()
+    if outcome in {"succeeded", "failed"}:
+        RUN_DURATION.labels(AGENT_TYPE).observe(time.monotonic() - started)
+
+
+async def _handle(deps: QADeps, msg: Message) -> str:
     try:
         run_id = uuid.UUID(str(msg.json()["run_id"]))
     except (KeyError, ValueError) as exc:
@@ -180,10 +195,13 @@ async def handle_qa_message(deps: QADeps, msg: Message) -> None:
     if run is None:
         raise PermanentError(f"qa run {run_id} not found")
     if run["status"] in TERMINAL:
-        return
+        return "already_finished"
+    run_id_var.set(str(run_id))
+    tenant_id_var.set(str(run["tenant_id"]))
+    trace.get_current_span().set_attribute("argus.run_id", str(run_id))
     lease = await claim_run(deps.pool, run_id, deps.worker_id, deps.lease_s)
     if lease is None:
-        return
+        return "held_elsewhere"
     run_input = json.loads(run["input"])
     question = str(run_input["question"])
     role = str(run_input.get("role", "member"))
@@ -199,7 +217,7 @@ async def handle_qa_message(deps: QADeps, msg: Message) -> None:
         if cached is not None:
             await finish_run(deps.pool, lease, "succeeded", result=cached)
             log.info("qa answered from semantic cache", extra={"run_id": str(run_id)})
-            return
+            return "succeeded"
     ctx = RunContext(
         pool=deps.pool,
         github=deps.github,
@@ -278,6 +296,8 @@ async def handle_qa_message(deps: QADeps, msg: Message) -> None:
         raise
     except (BudgetExceededError, NonDeterminismError, TenantBudgetExceededError) as exc:
         await finish_run(deps.pool, lease, "failed", error=str(exc))
+        return "failed"
     except Exception as exc:
         await release_run(deps.pool, lease, f"{type(exc).__name__}: {exc}")
         raise
+    return "succeeded"

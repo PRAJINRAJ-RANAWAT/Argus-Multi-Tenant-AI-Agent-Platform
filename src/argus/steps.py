@@ -25,7 +25,9 @@ from typing import Any
 
 import asyncpg
 
+from argus.metrics import STEPS
 from argus.runs import Lease, LeaseLostError
+from argus.telemetry import span
 
 STEP_KINDS = frozenset({"llm_call", "tool_call", "retrieval", "approval"})
 
@@ -90,17 +92,26 @@ class StepRunner:
             )
         if row is not None and row["status"] == "done":
             self.replayed += 1
+            STEPS.labels(kind, "replayed").inc()
             return json.loads(row["output"]) if row["output"] is not None else None
 
         await self._check_budget(seq)
         await self._start(seq, kind, name, digest, payload if store_input else None)
-        try:
-            outcome = await fn()
-        except Exception as exc:
-            await self._fail(seq, f"{type(exc).__name__}: {exc}")
-            raise
+        with span(
+            f"step.{kind} {name}",
+            attributes={"argus.run_id": str(self.lease.run_id), "argus.step": seq},
+        ) as s:
+            try:
+                outcome = await fn()
+            except Exception as exc:
+                await self._fail(seq, f"{type(exc).__name__}: {exc}")
+                STEPS.labels(kind, "failed").inc()
+                raise
+            s.set_attribute("llm.input_tokens", outcome.input_tokens)
+            s.set_attribute("llm.output_tokens", outcome.output_tokens)
         await self._finish(seq, outcome)
         self.executed += 1
+        STEPS.labels(kind, "executed").inc()
         return outcome.output
 
     async def _check_budget(self, seq: int) -> None:

@@ -8,16 +8,21 @@ consumers must be idempotent (they are: runs are keyed by idempotency key).
 
 import asyncio
 import contextlib
+import json
 import logging
 import signal
 
 import asyncpg
+from opentelemetry.trace import SpanKind
+from prometheus_client import start_http_server
 from redis.asyncio import Redis
 
 from argus.config import Settings, get_settings
 from argus.db.pool import create_pool
 from argus.logging import configure_logging
+from argus.metrics import OUTBOX_PUBLISHED
 from argus.queue.streams import STREAM_MAXLEN
+from argus.telemetry import configure_tracing, extract, inject, span
 
 log = logging.getLogger("argus.relay")
 
@@ -41,12 +46,17 @@ async def relay_once(pool: asyncpg.Pool, redis: Redis, batch: int = BATCH) -> in
             return 0
         pipe = redis.pipeline(transaction=False)
         for r in rows:
-            pipe.xadd(
-                r["topic"],
-                {"data": r["payload"], "attempt": "0", "outbox_id": str(r["id"])},
-                maxlen=STREAM_MAXLEN,
-                approximate=True,
-            )
+            fields = {"data": r["payload"], "attempt": "0", "outbox_id": str(r["id"])}
+            parent = extract((json.loads(r["payload"]) or {}).get("trace"))
+            with span(
+                "outbox.relay",
+                kind=SpanKind.PRODUCER,
+                parent=parent,
+                attributes={"messaging.destination": r["topic"], "outbox.id": r["id"]},
+            ):
+                fields.update(inject())  # traceparent of this hop, for the consumer
+            pipe.xadd(r["topic"], fields, maxlen=STREAM_MAXLEN, approximate=True)  # type: ignore[arg-type]
+            OUTBOX_PUBLISHED.labels(r["topic"]).inc()
         await pipe.execute()
         await conn.execute(
             "UPDATE outbox SET published_at = now(), attempts = attempts + 1 WHERE id = ANY($1)",
@@ -110,6 +120,10 @@ async def run_relay(
 def main() -> None:
     settings: Settings = get_settings().model_copy(update={"service_name": "argus-relay"})
     configure_logging(settings.service_name, settings.log_level)
+    configure_tracing(
+        settings.service_name, endpoint=settings.otel_endpoint, headers=settings.otel_header_map()
+    )
+    start_http_server(settings.metrics_port + 1)  # 9101: next to the worker's 9100
 
     async def _main() -> None:
         stop = asyncio.Event()
